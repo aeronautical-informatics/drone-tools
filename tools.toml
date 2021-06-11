@@ -1,0 +1,24 @@
+#[[tools]]
+#name = "betaflight-configurator"
+#url = "https://github.com/betaflight/betaflight-configurator"
+#tag = "10.7.0"
+
+[[tools]]
+name = "blackbox-log-viewer"
+url = "https://github.com/betaflight/blackbox-log-viewer"
+tag = "3.5.0"
+
+[[tools]]
+name = "inav-configurator"
+url = "https://github.com/iNavFlight/inav-configurator"
+tag = "2.6.1"
+
+#[[tools]]
+#name = "blheli-configurator"
+#url = "https://github.com/blheli-configurator/blheli-configurator"
+#tag = "1.2.0"
+
+#[[tools]]
+#name = "blheli_m-configurator"
+#url = "https://github.com/Asizon/blheli-configurator"
+#tag = "1.2.0-jazzmaverick-beta4"
