@@ -19,7 +19,7 @@ icon = "bf_icon_128.png"
 [[tools]]
 name = "inav-configurator"
 url = "https://github.com/iNavFlight/inav-configurator"
-tag = "2.6.1"
+tag = "3.0.0"
 desktop_name = "INAV Configurator"
 comment = "Configure INAV flight controllers"
 icon = "inav_icon_128.png"

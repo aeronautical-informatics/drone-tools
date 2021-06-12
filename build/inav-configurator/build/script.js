@@ -19566,7 +19566,7 @@ GUI_control.prototype.content_ready = function (callback) {
     });
 
     // Insert a documentation button next to the tab title
-    const tabTitle = $('div#content .tab_title');
+    const tabTitle = $('div#content .tab_title').first();
     const documentationDiv = $('<div>').addClass('cf_doc_version_bt');
     $('<a>').attr('href', 'https://github.com/iNavFlight/inav/wiki')
         .attr('target', '_blank').attr('id', 'button-documentation')
@@ -19931,11 +19931,23 @@ var MSPCodes = {
     MSP2_INAV_SET_GLOBAL_FUNCTIONS:     0x2025,
     MSP2_INAV_LOGIC_CONDITIONS_STATUS:  0x2026,
     MSP2_INAV_GVAR_STATUS:              0x2027,
+    MSP2_INAV_PROGRAMMING_PID:          0x2028,
+    MSP2_INAV_SET_PROGRAMMING_PID:      0x2029,
+    MSP2_INAV_PROGRAMMING_PID_STATUS:   0x202A,
 
     MSP2_PID:                           0x2030,
     MSP2_SET_PID:                       0x2031,
 
-    MSP2_INAV_OPFLOW_CALIBRATION:       0x2032
+    MSP2_INAV_OPFLOW_CALIBRATION:       0x2032,
+    
+    MSP2_INAV_FWUPDT_PREPARE:           0x2033,
+    MSP2_INAV_FWUPDT_STORE:             0x2034,
+    MSP2_INAV_FWUPDT_EXEC:              0x2035,
+    MSP2_INAV_FWUPDT_ROLLBACK_PREPARE:  0x2036,
+    MSP2_INAV_FWUPDT_ROLLBACK_EXEC:     0x2037,
+    
+    MSP2_INAV_SAFEHOME:                 0x2038,
+    MSP2_INAV_SET_SAFEHOME:             0x2039
 };
 
 /*global $, SERVO_DATA, PID_names, ADJUSTMENT_RANGES, RXFAIL_CONFIG, SERVO_CONFIG*/
@@ -19983,6 +19995,7 @@ var mspHelper = (function (gui) {
         'FRSKY_OSD': 20,
         'DJI_FPV': 21,
         'SMARTPORT_MASTER': 23,
+        'IMU2': 24,
     };
 
     // Required for MSP_DEBUGMSG because console.log() doesn't allow omitting
@@ -20005,8 +20018,7 @@ var mspHelper = (function (gui) {
             flags,
             colorCount,
             color;
-
-        if (!dataHandler.unsupported) switch (dataHandler.code) {
+        if (!dataHandler.unsupported || dataHandler.unsupported) switch (dataHandler.code) {
             case MSPCodes.MSP_IDENT:
                 //FIXME remove this frame when proven not needed
                 console.log('Using deprecated msp command: MSP_IDENT');
@@ -20381,13 +20393,16 @@ var mspHelper = (function (gui) {
                 }
                 break;
             case MSPCodes.MSP_WP:
-                MISSION_PLANER.bufferPoint.number = data.getUint8(0);
-                MISSION_PLANER.bufferPoint.action = data.getUint8(1);
-                MISSION_PLANER.bufferPoint.lat = data.getInt32(2, true) / 10000000;
-                MISSION_PLANER.bufferPoint.lon = data.getInt32(6, true) / 10000000;
-                MISSION_PLANER.bufferPoint.alt = data.getInt32(10, true);
-                MISSION_PLANER.bufferPoint.p1 = data.getInt16(14, true);
-
+                MISSION_PLANER.put(new Waypoint(
+                    data.getUint8(0),
+                    data.getUint8(1),
+                    data.getInt32(2, true),
+                    data.getInt32(6, true),
+                    data.getInt32(10, true),
+                    data.getInt16(14, true),
+                    data.getInt16(16, true),
+                    data.getInt16(18, true)
+                ));
                 break;
             case MSPCodes.MSP_BOXIDS:
                 //noinspection JSUndeclaredVariable
@@ -20475,6 +20490,39 @@ var mspHelper = (function (gui) {
 
             case MSPCodes.MSP2_INAV_SET_LOGIC_CONDITIONS:
                 console.log("Logic conditions saved");
+                break;
+
+            case MSPCodes.MSP2_INAV_PROGRAMMING_PID:
+                PROGRAMMING_PID.flush();
+                if (data.byteLength % 19 === 0) {
+                    for (i = 0; i < data.byteLength; i += 19) {
+                        PROGRAMMING_PID.put(new ProgrammingPid(
+                            data.getInt8(i),                // enabled
+                            data.getInt8(i + 1),            // setpointType
+                            data.getInt32(i + 2, true),     // setpointValue
+                            data.getInt8(i + 6),            // measurementType
+                            data.getInt32(i + 7, true),     // measurementValue
+                            data.getInt16(i + 11, true),    // gainP
+                            data.getInt16(i + 13, true),    // gainI
+                            data.getInt16(i + 15, true),    // gainD
+                            data.getInt16(i + 17, true)     // gainFF
+                        ));
+                    }
+                }
+                break;
+
+            case MSPCodes.MSP2_INAV_PROGRAMMING_PID_STATUS:
+                if (data.byteLength % 4 === 0) {
+                    let index = 0;
+                    for (i = 0; i < data.byteLength; i += 4) {
+                        PROGRAMMING_PID_STATUS.set(index, data.getInt32(i, true));
+                        index++;
+                    }
+                }
+                break;
+
+            case MSPCodes.MSP2_INAV_SET_PROGRAMMING_PID:
+                console.log("Programming PID saved");
                 break;
 
             case MSPCodes.MSP2_COMMON_MOTOR_MIXER:
@@ -21231,10 +21279,11 @@ var mspHelper = (function (gui) {
                 RTH_AND_LAND_CONFIG.rthAltControlMode = data.getUint8(6);
                 RTH_AND_LAND_CONFIG.rthAbortThreshold = data.getUint16(7, true);
                 RTH_AND_LAND_CONFIG.rthAltitude = data.getUint16(9, true);
-                RTH_AND_LAND_CONFIG.landDescentRate = data.getUint16(11, true);
-                RTH_AND_LAND_CONFIG.landSlowdownMinAlt = data.getUint16(13, true);
-                RTH_AND_LAND_CONFIG.landSlowdownMaxAlt = data.getUint16(15, true);
-                RTH_AND_LAND_CONFIG.emergencyDescentRate = data.getUint16(17, true);
+                RTH_AND_LAND_CONFIG.landMinAltVspd = data.getUint16(11, true);
+                RTH_AND_LAND_CONFIG.landMaxAltVspd = data.getUint16(13, true);
+                RTH_AND_LAND_CONFIG.landSlowdownMinAlt = data.getUint16(15, true);
+                RTH_AND_LAND_CONFIG.landSlowdownMaxAlt = data.getUint16(17, true);
+                RTH_AND_LAND_CONFIG.emergencyDescentRate = data.getUint16(19, true);
                 break;
 
             case MSPCodes.MSP_SET_RTH_AND_LAND_CONFIG:
@@ -21318,9 +21367,9 @@ var mspHelper = (function (gui) {
                 break;
             case MSPCodes.MSP_WP_GETINFO:
                 // Reserved for waypoint capabilities data.getUint8(0);
-                MISSION_PLANER.maxWaypoints = data.getUint8(1);
-                MISSION_PLANER.isValidMission = data.getUint8(2);
-                MISSION_PLANER.countBusyPoints = data.getUint8(3);
+                MISSION_PLANER.setMaxWaypoints(data.getUint8(1));
+                MISSION_PLANER.setValidMission(data.getUint8(2));
+                MISSION_PLANER.setCountBusyPoints(data.getUint8(3));
                 break;
             case MSPCodes.MSP_SET_WP:
                 console.log('Point saved');
@@ -21400,7 +21449,18 @@ var mspHelper = (function (gui) {
                     SENSOR_DATA.temperature[i] = temp_decidegrees / 10; // °C
                 }
                 break;
-
+            case MSPCodes.MSP2_INAV_SAFEHOME:
+                SAFEHOMES.put(new Safehome(
+                    data.getUint8(0),
+                    data.getUint8(1),
+                    data.getInt32(2, true),
+                    data.getInt32(6, true)
+                ));
+                break;
+            case MSPCodes.MSP2_INAV_SET_SAFEHOME:
+                console.log('Safehome points saved');
+                break;    
+            
             default:
                 console.log('Unknown code detected: ' + dataHandler.code);
         } else {
@@ -21900,8 +21960,11 @@ var mspHelper = (function (gui) {
                 buffer.push(lowByte(RTH_AND_LAND_CONFIG.rthAltitude));
                 buffer.push(highByte(RTH_AND_LAND_CONFIG.rthAltitude));
 
-                buffer.push(lowByte(RTH_AND_LAND_CONFIG.landDescentRate));
-                buffer.push(highByte(RTH_AND_LAND_CONFIG.landDescentRate));
+                buffer.push(lowByte(RTH_AND_LAND_CONFIG.landMinAltVspd));
+                buffer.push(highByte(RTH_AND_LAND_CONFIG.landMinAltVspd));
+
+                buffer.push(lowByte(RTH_AND_LAND_CONFIG.landMaxAltVspd));
+                buffer.push(highByte(RTH_AND_LAND_CONFIG.landMaxAltVspd));
 
                 buffer.push(lowByte(RTH_AND_LAND_CONFIG.landSlowdownMinAlt));
                 buffer.push(highByte(RTH_AND_LAND_CONFIG.landSlowdownMinAlt));
@@ -22008,34 +22071,7 @@ var mspHelper = (function (gui) {
                 buffer.push(SENSOR_CONFIG.opflow);
                 break;
 
-            case MSPCodes.MSP_SET_WP:
-                buffer.push(MISSION_PLANER.bufferPoint.number);    // sbufReadU8(src);    // number
-                buffer.push(MISSION_PLANER.bufferPoint.action);    // sbufReadU8(src);    // action
-                buffer.push(specificByte(MISSION_PLANER.bufferPoint.lat, 0));    // sbufReadU32(src);      // lat
-                buffer.push(specificByte(MISSION_PLANER.bufferPoint.lat, 1));
-                buffer.push(specificByte(MISSION_PLANER.bufferPoint.lat, 2));
-                buffer.push(specificByte(MISSION_PLANER.bufferPoint.lat, 3));
-                buffer.push(specificByte(MISSION_PLANER.bufferPoint.lon, 0));    // sbufReadU32(src);      // lon
-                buffer.push(specificByte(MISSION_PLANER.bufferPoint.lon, 1));
-                buffer.push(specificByte(MISSION_PLANER.bufferPoint.lon, 2));
-                buffer.push(specificByte(MISSION_PLANER.bufferPoint.lon, 3));
-                buffer.push(specificByte(MISSION_PLANER.bufferPoint.alt, 0));    // sbufReadU32(src);      // to set altitude (cm)
-                buffer.push(specificByte(MISSION_PLANER.bufferPoint.alt, 1));
-                buffer.push(specificByte(MISSION_PLANER.bufferPoint.alt, 2));
-                buffer.push(specificByte(MISSION_PLANER.bufferPoint.alt, 3));
-                buffer.push(lowByte(MISSION_PLANER.bufferPoint.p1)); //sbufReadU16(src);       // P1 speed or landing
-                buffer.push(highByte(MISSION_PLANER.bufferPoint.p1));
-                buffer.push(lowByte(0)); //sbufReadU16(src);       // P2
-                buffer.push(highByte(0));
-                buffer.push(lowByte(0)); //sbufReadU16(src);       // P3
-                buffer.push(highByte(0));
-                buffer.push(MISSION_PLANER.bufferPoint.endMission); //sbufReadU8(src);      // future: to set nav flag
-                break;
-            case MSPCodes.MSP_WP:
-                console.log(MISSION_PLANER.bufferPoint.number);
-                buffer.push(MISSION_PLANER.bufferPoint.number+1);
-
-                break;
+            
             case MSPCodes.MSP_WP_MISSION_SAVE:
                 // buffer.push(0);
                 console.log(buffer);
@@ -22101,17 +22137,17 @@ var mspHelper = (function (gui) {
     };
 
     self.sendBlackboxConfiguration = function (onDataCallback) {
-	var buffer = [];
-	var messageId = MSPCodes.MSP_SET_BLACKBOX_CONFIG;
-	buffer.push(BLACKBOX.blackboxDevice & 0xFF);
-	    messageId = MSPCodes.MSP2_SET_BLACKBOX_CONFIG;
-	    buffer.push(lowByte(BLACKBOX.blackboxRateNum));
-	    buffer.push(highByte(BLACKBOX.blackboxRateNum));
-	    buffer.push(lowByte(BLACKBOX.blackboxRateDenom));
-	    buffer.push(highByte(BLACKBOX.blackboxRateDenom));
+    var buffer = [];
+    var messageId = MSPCodes.MSP_SET_BLACKBOX_CONFIG;
+    buffer.push(BLACKBOX.blackboxDevice & 0xFF);
+        messageId = MSPCodes.MSP2_SET_BLACKBOX_CONFIG;
+        buffer.push(lowByte(BLACKBOX.blackboxRateNum));
+        buffer.push(highByte(BLACKBOX.blackboxRateNum));
+        buffer.push(lowByte(BLACKBOX.blackboxRateDenom));
+        buffer.push(highByte(BLACKBOX.blackboxRateDenom));
         //noinspection JSUnusedLocalSymbols
         MSP.send_message(messageId, buffer, false, function (response) {
-	    onDataCallback();
+        onDataCallback();
         });
     };
 
@@ -22303,6 +22339,58 @@ var mspHelper = (function (gui) {
         }
     };
 
+    self.loadProgrammingPid = function (callback) {
+        MSP.send_message(MSPCodes.MSP2_INAV_PROGRAMMING_PID, false, false, callback);
+    }
+
+    self.sendProgrammingPid = function (onCompleteCallback) {
+        let nextFunction = sendPid,
+            pidIndex = 0;
+
+        if (PROGRAMMING_PID.getCount() == 0) {
+            onCompleteCallback();
+        } else {
+            nextFunction();
+        }
+
+        function sendPid() {
+
+            let buffer = [];
+
+            // send one at a time, with index, 20 bytes per one condition
+
+            let pid = PROGRAMMING_PID.get()[pidIndex];
+
+            buffer.push(pidIndex);
+            buffer.push(pid.getEnabled());
+            buffer.push(pid.getSetpointType());
+            buffer.push(specificByte(pid.getSetpointValue(), 0));
+            buffer.push(specificByte(pid.getSetpointValue(), 1));
+            buffer.push(specificByte(pid.getSetpointValue(), 2));
+            buffer.push(specificByte(pid.getSetpointValue(), 3));
+            buffer.push(pid.getMeasurementType());
+            buffer.push(specificByte(pid.getMeasurementValue(), 0));
+            buffer.push(specificByte(pid.getMeasurementValue(), 1));
+            buffer.push(specificByte(pid.getMeasurementValue(), 2));
+            buffer.push(specificByte(pid.getMeasurementValue(), 3));
+            buffer.push(specificByte(pid.getGainP(), 0));
+            buffer.push(specificByte(pid.getGainP(), 1));
+            buffer.push(specificByte(pid.getGainI(), 0));
+            buffer.push(specificByte(pid.getGainI(), 1));
+            buffer.push(specificByte(pid.getGainD(), 0));
+            buffer.push(specificByte(pid.getGainD(), 1));
+            buffer.push(specificByte(pid.getGainFF(), 0));
+            buffer.push(specificByte(pid.getGainFF(), 1));
+
+            // prepare for next iteration
+            pidIndex++;
+            if (pidIndex == PROGRAMMING_PID.getCount()) { //This is the last rule. Not pretty, but we have to send all rules
+                nextFunction = onCompleteCallback;
+            }
+            MSP.send_message(MSPCodes.MSP2_INAV_SET_PROGRAMMING_PID, buffer, false, nextFunction);
+        }
+    };
+
     self.sendModeRanges = function (onCompleteCallback) {
         var nextFunction = send_next_mode_range;
 
@@ -22336,7 +22424,7 @@ var mspHelper = (function (gui) {
     };
 
     /**
-     * Send a request to read a block of data from the dataflash at the given address and pass that address and a dataview
+     * Send a request to read a block of data from the dataflash at the given address and pass that address and a ArrayBuffer
      * of the returned data to the given callback (or null for the data if an error occured).
      */
     self.dataflashRead = function (address, onDataCallback) {
@@ -22360,7 +22448,7 @@ var mspHelper = (function (gui) {
                 /* Strip that address off the front of the reply and deliver it separately so the caller doesn't have to
                  * figure out the reply format:
                  */
-                onDataCallback(address, new DataView(response.data.buffer, response.data.byteOffset + 4, response.data.buffer.byteLength - 4));
+                onDataCallback(address, response.data.buffer.slice(4));
             } else {
                 // Report error
                 onDataCallback(address, null);
@@ -22677,7 +22765,7 @@ var mspHelper = (function (gui) {
     };
 
     self.loadBatteryConfig = function (callback) {
-	MSP.send_message(MSPCodes.MSPV2_BATTERY_CONFIG, false, false, callback);
+    MSP.send_message(MSPCodes.MSPV2_BATTERY_CONFIG, false, false, callback);
     };
 
     self.loadArmingConfig = function (callback) {
@@ -22842,6 +22930,76 @@ var mspHelper = (function (gui) {
 
     self.getMissionInfo = function (callback) {
         MSP.send_message(MSPCodes.MSP_WP_GETINFO, false, false, callback);
+    };
+    
+    self.loadWaypoints = function (callback) {
+        MISSION_PLANER.reinit();
+        let waypointId = 1;
+        MSP.send_message(MSPCodes.MSP_WP_GETINFO, false, false, getFirstWP);
+        
+        function getFirstWP() {
+            MSP.send_message(MSPCodes.MSP_WP, [waypointId], false, nextWaypoint)
+        };
+        
+        function nextWaypoint() {
+            waypointId++;
+            if (waypointId < MISSION_PLANER.getCountBusyPoints()) {
+                MSP.send_message(MSPCodes.MSP_WP, [waypointId], false, nextWaypoint);
+            }
+            else {
+                MSP.send_message(MSPCodes.MSP_WP, [waypointId], false, callback);
+            }
+        };
+    };
+    
+    self.saveWaypoints = function (callback) {
+        let waypointId = 1;
+        MSP.send_message(MSPCodes.MSP_SET_WP, MISSION_PLANER.extractBuffer(waypointId), false, nextWaypoint)
+
+        function nextWaypoint() {
+            waypointId++;
+            if (waypointId < MISSION_PLANER.get().length) {
+                MSP.send_message(MSPCodes.MSP_SET_WP, MISSION_PLANER.extractBuffer(waypointId), false, nextWaypoint);
+            }
+            else {
+                MSP.send_message(MSPCodes.MSP_SET_WP, MISSION_PLANER.extractBuffer(waypointId), false, endMission);
+            }
+        };
+        
+        function endMission() {
+            MSP.send_message(MSPCodes.MSP_WP_GETINFO, false, false, callback);
+        }
+    };
+    
+    self.loadSafehomes = function (callback) {
+        SAFEHOMES.flush();
+        let safehomeId = 0;
+        MSP.send_message(MSPCodes.MSP2_INAV_SAFEHOME, [safehomeId], false, nextSafehome);
+        
+        function nextSafehome() {
+            safehomeId++;
+            if (safehomeId < SAFEHOMES.getMaxSafehomeCount()-1) {
+                MSP.send_message(MSPCodes.MSP2_INAV_SAFEHOME, [safehomeId], false, nextSafehome);
+            }
+            else {
+                MSP.send_message(MSPCodes.MSP2_INAV_SAFEHOME, [safehomeId], false, callback);
+            }
+        };
+    };
+    
+    self.saveSafehomes = function (callback) {
+        let safehomeId = 0;
+        MSP.send_message(MSPCodes.MSP2_INAV_SET_SAFEHOME, SAFEHOMES.extractBuffer(safehomeId), false, nextSendSafehome);
+        
+        function nextSendSafehome() {
+            safehomeId++;
+            if (safehomeId < SAFEHOMES.getMaxSafehomeCount()-1) {
+                MSP.send_message(MSPCodes.MSP2_INAV_SET_SAFEHOME, SAFEHOMES.extractBuffer(safehomeId), false, nextSendSafehome);
+            }
+            else {
+                MSP.send_message(MSPCodes.MSP2_INAV_SET_SAFEHOME, SAFEHOMES.extractBuffer(safehomeId), false, callback);
+            }
+        };
     };
 
     self._getSetting = function (name) {
@@ -23106,6 +23264,14 @@ var mspHelper = (function (gui) {
     self.loadGlobalVariablesStatus = function (callback) {
         if (semver.gte(CONFIG.flightControllerVersion, "2.5.0")) {
             MSP.send_message(MSPCodes.MSP2_INAV_GVAR_STATUS, false, false, callback);
+        } else {
+            callback();
+        }
+    };
+
+    self.loadProgrammingPidStatus = function (callback) {
+        if (semver.gte(CONFIG.flightControllerVersion, "2.6.0")) {
+            MSP.send_message(MSPCodes.MSP2_INAV_PROGRAMMING_PID_STATUS, false, false, callback);
         } else {
             callback();
         }
@@ -24555,7 +24721,7 @@ const mixerList = [
     {
         id: 8,
         name: 'Flying Wing',
-        model: 'custom',
+        model: 'flying_wing',
         image: 'flying_wing',
         enabled: true,
         legacy: true,
@@ -24574,7 +24740,7 @@ const mixerList = [
     {
         id: 27,
         name: 'Flying Wing with differential thrust',
-        model: 'custom',
+        model: 'flying_wing',
         image: 'flying_wing',
         enabled: true,
         legacy: false,
@@ -25698,8 +25864,8 @@ function update_dataflash_global() {
 
 var CONFIGURATOR = {
      // all versions are specified and compared using semantic versioning http://semver.org/
-    'minfirmwareVersionAccepted': '2.5.0',
-    'maxFirmwareVersionAccepted': '2.7.0', // Condition is < (lt) so we accept all in 2.2 branch, not 2.3 actualy
+    'minfirmwareVersionAccepted': '3.0.0',
+    'maxFirmwareVersionAccepted': '3.2.0', // Condition is < (lt) so we accept all in 3.0 branch
     'connectionValid': false,
     'connectionValidCliOnly': false,
     'cliActive': false,
@@ -25731,6 +25897,8 @@ var CONFIG,
     LOGIC_CONDITIONS_STATUS,
     GLOBAL_FUNCTIONS,
     GLOBAL_VARIABLES_STATUS,
+    PROGRAMMING_PID,
+    PROGRAMMING_PID_STATUS,
     SERIAL_CONFIG,
     SENSOR_DATA,
     MOTOR_DATA,
@@ -25768,19 +25936,26 @@ var CONFIG,
     BATTERY_CONFIG,
     OUTPUT_MAPPING,
     SETTINGS,
-    BRAKING_CONFIG;
+    BRAKING_CONFIG,
+    SAFEHOMES;
 
 var FC = {
     MAX_SERVO_RATE: 125,
     MIN_SERVO_RATE: 0,
+    isAirplane: function () {
+        return (MIXER_CONFIG.platformType == PLATFORM_AIRPLANE);
+    },
+    isMultirotor: function () {
+        return (MIXER_CONFIG.platformType == PLATFORM_MULTIROTOR || MIXER_CONFIG.platformType == PLATFORM_TRICOPTER);
+    },
     isRpyFfComponentUsed: function () {
         return (MIXER_CONFIG.platformType == PLATFORM_AIRPLANE || MIXER_CONFIG.platformType == PLATFORM_ROVER || MIXER_CONFIG.platformType == PLATFORM_BOAT) || ((MIXER_CONFIG.platformType == PLATFORM_MULTIROTOR || MIXER_CONFIG.platformType == PLATFORM_TRICOPTER) && semver.gte(CONFIG.flightControllerVersion, "2.6.0"));
     },
     isRpyDComponentUsed: function () {
-        return MIXER_CONFIG.platformType == PLATFORM_MULTIROTOR || MIXER_CONFIG.platformType == PLATFORM_TRICOPTER;
+        return true; // Currently all platforms use D term
     },
     isCdComponentUsed: function () {
-        return FC.isRpyDComponentUsed();
+        return (MIXER_CONFIG.platformType == PLATFORM_MULTIROTOR || MIXER_CONFIG.platformType == PLATFORM_TRICOPTER);
     },
     resetState: function () {
         SENSOR_STATUS = {
@@ -25880,11 +26055,13 @@ var FC = {
         ADJUSTMENT_RANGES = [];
 
         SERVO_CONFIG = [];
-        SERVO_RULES = new ServoMixerRuleCollection();
-        MOTOR_RULES = new MotorMixerRuleCollection();
-        LOGIC_CONDITIONS = new LogicConditionsCollection();
+        SERVO_RULES             = new ServoMixerRuleCollection();
+        MOTOR_RULES             = new MotorMixerRuleCollection();
+        LOGIC_CONDITIONS        = new LogicConditionsCollection();
         LOGIC_CONDITIONS_STATUS = new LogicConditionsStatus();
         GLOBAL_VARIABLES_STATUS = new GlobalVariablesStatus();
+        PROGRAMMING_PID         = new ProgrammingPidCollection();
+        PROGRAMMING_PID_STATUS  = new ProgrammingPidStatus();
 
         MIXER_CONFIG = {
             yawMotorDirection: 0,
@@ -25942,7 +26119,7 @@ var FC = {
             packetCount: 0
         };
 
-        MISSION_PLANER = {
+        /* MISSION_PLANER = {
             maxWaypoints: 0,
             isValidMission: 0,
             countBusyPoints: 0,
@@ -25953,9 +26130,13 @@ var FC = {
                 lon: 0,
                 alt: 0,
                 endMission: 0,
-                p1: 0
+                p1: 0,
+                p2: 0,
+                p3: 0
             }
-        };
+        }; */
+        
+        MISSION_PLANER = new WaypointCollection();
 
         ANALOG = {
             voltage: 0,
@@ -26250,6 +26431,8 @@ var FC = {
         OUTPUT_MAPPING = new OutputMappingCollection();
 
         SETTINGS = {};
+        
+        SAFEHOMES = new SafehomeCollection();
     },
     getOutputUsages: function() {
         return {
@@ -26276,13 +26459,13 @@ var FC = {
             {bit: 19, group: 'other', name: 'BLACKBOX', haveTip: true, showNameInTip: true},
             {bit: 28, group: 'other', name: 'PWM_OUTPUT_ENABLE', haveTip: true},
             {bit: 26, group: 'other', name: 'SOFTSPI'},
-            {bit: 27, group: 'other', name: 'PWM_SERVO_DRIVER', haveTip: true, showNameInTip: true},
             {bit: 29, group: 'other', name: 'OSD', haveTip: false, showNameInTip: false},
             {bit: 22, group: 'other', name: 'AIRMODE', haveTip: false, showNameInTip: false},
             {bit: 30, group: 'other', name: 'FW_LAUNCH', haveTip: false, showNameInTip: false},
             {bit: 2, group: 'other', name: 'TX_PROF_SEL', haveTip: false, showNameInTip: false},
             {bit: 0, group: 'other', name: 'THR_VBAT_COMP', haveTip: true, showNameInTip: true},
-            {bit: 3, group: 'other', name: 'BAT_PROFILE_AUTOSWITCH', haveTip: true, showNameInTip: true}
+            {bit: 3, group: 'other', name: 'BAT_PROFILE_AUTOSWITCH', haveTip: true, showNameInTip: true},
+            {bit: 31, group: 'other', name: "FW_AUTOTRIM", haveTip: true, showNameInTip: true}
         ];
 
         if (semver.gte(CONFIG.flightControllerVersion, "2.4.0") && semver.lt(CONFIG.flightControllerVersion, "2.5.0")) {
@@ -26308,12 +26491,8 @@ var FC = {
     getLooptimes: function () {
         return {
             125: {
-                defaultLooptime: 1000,
+                defaultLooptime: 500,
                 looptimes: {
-                    4000: "250Hz",
-                    3000: "334Hz",
-                    2000: "500Hz",
-                    1500: "667Hz",
                     1000: "1kHz",
                     500: "2kHz",
                     250: "4kHz",
@@ -26323,8 +26502,6 @@ var FC = {
             1000: {
                 defaultLooptime: 1000,
                 looptimes: {
-                    4000: "250Hz",
-                    2000: "500Hz",
                     1000: "1kHz"
                 }
             }
@@ -26335,10 +26512,6 @@ var FC = {
             125: {
                 defaultLooptime: 1000,
                 looptimes: {
-                    4000: "250Hz",
-                    3000: "334Hz",
-                    2000: "500Hz",
-                    1500: "667Hz",
                     1000: "1kHz",
                     500: "2kHz",
                     250: "4kHz",
@@ -26348,8 +26521,6 @@ var FC = {
             1000: {
                 defaultLooptime: 1000,
                 looptimes: {
-                    4000: "250Hz",
-                    2000: "500Hz",
                     1000: "1kHz"
                 }
             }
@@ -26359,32 +26530,26 @@ var FC = {
         return [
             {
                 tick: 125,
-                defaultDenominator: 16,
                 label: "256Hz"
             },
             {
                 tick: 1000,
-                defaultDenominator: 2,
                 label: "188Hz"
             },
             {
                 tick: 1000,
-                defaultDenominator: 2,
                 label: "98Hz"
             },
             {
                 tick: 1000,
-                defaultDenominator: 2,
                 label: "42Hz"
             },
             {
                 tick: 1000,
-                defaultDenominator: 2,
                 label: "20Hz"
             },
             {
                 tick: 1000,
-                defaultDenominator: 2,
                 label: "10Hz"
             }
         ];
@@ -26591,7 +26756,11 @@ var FC = {
         return [ "NONE", "HCSR04", "SRF10", "INAV_I2C", "VL53L0X", "MSP", "UIB", "Benewake TFmini"];
     },
     getOpticalFlowNames: function () {
-        return [ "NONE", "PMW3901", "CXOF", "MSP", "FAKE" ];
+        if (semver.gte(CONFIG.flightControllerVersion, "2.7.0")) {
+            return [ "NONE", "CXOF", "MSP", "FAKE" ];
+        } else {
+            return [ "NONE", "PMW3901", "CXOF", "MSP", "FAKE" ];
+        }
     },
     getArmingFlags: function () {
         return {
@@ -26835,6 +27004,11 @@ var FC = {
                 hasOperand: [true, true],
                 output: "raw"
             },
+            40: {
+                name: "MOD",
+                hasOperand: [true, true],
+                output: "raw"
+            },
             18: {
                 name: "GVAR SET",
                 hasOperand: [true, true],
@@ -26934,7 +27108,12 @@ var FC = {
                 name: "MAP OUTPUT",
                 hasOperand: [true, true],
                 output: "raw"
-            }
+            },
+            38: {
+                name: "RC CHANNEL OVERRIDE",
+                hasOperand: [true, true],
+                output: "boolean"
+            },
         }
     },
     getOperandTypes: function () {
@@ -26962,8 +27141,8 @@ var FC = {
                     1: "Home distance [m]",
                     2: "Trip distance [m]",
                     3: "RSSI",
-                    4: "Vbat [deci-Volt] [1V = 10]",
-                    5: "Cell voltage [deci-Volt] [1V = 10]",
+                    4: "Vbat [centi-Volt] [1V = 100]",
+                    5: "Cell voltage [centi-Volt] [1V = 100]",
                     6: "Current [centi-Amp] [1A = 100]",
                     7: "Current drawn [mAh]",
                     8: "GPS Sats",
@@ -26992,6 +27171,7 @@ var FC = {
                     31: "3D home distance [m]",
                     32: "CRSF LQ",
                     33: "CRSF SNR",
+                    34: "GPS Valid Fix",
                 }
             },
             3: {
@@ -27015,13 +27195,19 @@ var FC = {
             4: {
                 name: "Logic Condition",
                 type: "range",
-                range: [0, 15],
+                range: [0, 31],
                 default: 0
             },
             5: {
                 name: "Global Variable",
                 type: "range",
                 range: [0, 7],
+                default: 0
+            },
+            6: {
+                name: "Programming PID",
+                type: "range",
+                range: [0, 3],
                 default: 0
             }
         }
@@ -29639,6 +29825,321 @@ let GlobalVariablesStatus = function () {
 
     return self;
 };
+/*global $,FC*/
+'use strict';
+
+let ProgrammingPid = function (enabled, setpointType, setpointValue, measurementType, measurementValue, gainP, gainI, gainD, gainFF) {
+    let self = {};
+    let $row;
+
+    self.getEnabled = function () {
+        return !!enabled;
+    };
+
+    self.setEnabled = function (data) {
+        enabled = !!data;
+    };
+
+    self.getSetpointType = function () {
+        return setpointType;
+    };
+
+    self.setSetpointType = function (data) {
+        setpointType = data;
+    };
+
+    self.getSetpointValue = function () {
+        return setpointValue;
+    };
+
+    self.setSetpointValue = function (data) {
+        setpointValue = data;
+    };
+
+    self.getMeasurementType = function () {
+        return measurementType;
+    };
+
+    self.setMeasurementType = function (data) {
+        measurementType = data;
+    };
+
+    self.getMeasurementValue = function () {
+        return measurementValue;
+    };
+
+    self.setMeasurementValue = function (data) {
+        measurementValue = data;
+    };
+
+    self.getGainP = function () {
+        return gainP;
+    };
+
+    self.setGainP = function (data) {
+        gainP = data;
+    };
+
+    self.getGainI = function () {
+        return gainI;
+    };
+
+    self.setGainI = function (data) {
+        gainI = data;
+    };
+
+    self.getGainD = function () {
+        return gainD;
+    };
+
+    self.setGainD = function (data) {
+        gainD = data;
+    };
+
+    self.getGainFF = function () {
+        return gainFF;
+    };
+
+    self.setGainFF = function (data) {
+        gainFF = data;
+    };
+
+    self.onEnabledChange = function (event) {
+        let $cT = $(event.currentTarget);
+        self.setEnabled(!!$cT.prop('checked'));
+    };
+
+    self.onGainPChange = function (event) {
+        let $cT = $(event.currentTarget);
+        self.setGainP($cT.val());
+    };
+
+    self.onGainIChange = function (event) {
+        let $cT = $(event.currentTarget);
+        self.setGainI($cT.val());
+    };
+
+    self.onGainDChange = function (event) {
+        let $cT = $(event.currentTarget);
+        self.setGainD($cT.val());
+    };
+
+    self.onGainFFChange = function (event) {
+        let $cT = $(event.currentTarget);
+        self.setGainFF($cT.val());
+    };
+
+    self.onOperatorValueChange = function (event) {
+        let $cT = $(event.currentTarget),
+            operand = $cT.data("operand");
+
+        if (operand == 0) {
+            self.setSetpointValue($cT.val());
+        } else {
+            self.setMeasurementValue($cT.val());
+        }
+    };
+
+    self.render = function (index, $container) {
+
+        $container.find('tbody').append('<tr>\
+                <td class="pid_cell__index"></td>\
+                <td class="pid_cell__enabled"></td>\
+                <td class="pid_cell__setpoint"></td>\
+                <td class="pid_cell__measurement"></td>\
+                <td class="pid_cell__p"></td>\
+                <td class="pid_cell__i"></td>\
+                <td class="pid_cell__d"></td>\
+                <td class="pid_cell__ff"></td>\
+                <td class="pid_cell__output"></td>\
+            </tr>\
+        ');
+
+        $row = $container.find('tr:last');
+
+        $row.find('.pid_cell__index').html(index);
+        $row.find('.pid_cell__enabled').html("<input type='checkbox' class='toggle logic_element__enabled' />");
+        $row.find('.logic_element__enabled').
+            prop('checked', self.getEnabled()).
+            change(self.onEnabledChange);
+
+        self.renderOperand(0);
+        self.renderOperand(1);
+
+        $row.find(".pid_cell__p").html('<input type="number" class="pid_cell__p-gain" step="1" min="0" max="32767" value="0">');
+        $row.find(".pid_cell__p-gain").val(self.getGainP()).change(self.onGainPChange);
+
+        $row.find(".pid_cell__i").html('<input type="number" class="pid_cell__i-gain" step="1" min="0" max="32767" value="0">');
+        $row.find(".pid_cell__i-gain").val(self.getGainI()).change(self.onGainIChange);
+
+        $row.find(".pid_cell__d").html('<input type="number" class="pid_cell__d-gain" step="1" min="0" max="32767" value="0">');
+        $row.find(".pid_cell__d-gain").val(self.getGainD()).change(self.onGainDChange);
+
+        $row.find(".pid_cell__ff").html('<input type="number" class="pid_cell__ff-gain" step="1" min="0" max="32767" value="0">');
+        $row.find(".pid_cell__ff-gain").val(self.getGainFF()).change(self.onGainFFChange);
+
+    }
+
+    self.onOperatorTypeChange = function (event) {
+        let $cT = $(event.currentTarget),
+            operand = $cT.data("operand"),
+            $container = $cT.parent(),
+            operandMetadata = FC.getOperandTypes()[$cT.val()];
+
+        if (operand == 0) {
+            self.setSetpointType($cT.val());
+            self.setSetpointValue(operandMetadata.default);
+        } else {
+            self.setMeasurementType($cT.val());
+            self.setMeasurementValue(operandMetadata.default);
+        }
+
+        GUI.renderOperandValue($container, operandMetadata, operand, operandMetadata.default, self.onOperatorValueChange);
+    };
+
+    self.renderOperand = function (operand) {
+        let type, value, $container;
+        if (operand == 0) {
+            type = setpointType;
+            value = setpointValue;
+            $container = $row.find('.pid_cell__setpoint');
+        } else {
+            type = measurementType;
+            value = measurementValue;
+            $container = $row.find('.pid_cell__measurement');
+        }
+
+        $container.html('');
+            
+        $container.append('<select class="logic_element__operand--type" data-operand="' + operand + '"></select>');
+        let $t = $container.find('.logic_element__operand--type');
+
+        for (let k in FC.getOperandTypes()) {
+            if (FC.getOperandTypes().hasOwnProperty(k)) {
+                let op = FC.getOperandTypes()[k];
+                
+                if (type == k) {
+                    $t.append('<option value="' + k + '" selected>' + op.name + '</option>');
+
+                    /* 
+                    * Render value element depending on type
+                    */
+                    GUI.renderOperandValue($container, op, operand, value, self.onOperatorValueChange);
+
+                } else {
+                    $t.append('<option value="' + k + '">' + op.name + '</option>');
+                }
+            }
+        }
+
+        /*
+        * Bind events
+        */
+        $t.change(self.onOperatorTypeChange);
+
+    }
+
+    self.update = function (index, value, $container) {
+        if (typeof $row === 'undefined') {
+            return;
+        }
+
+        $row.find('.pid_cell__output').html(value);
+    }
+
+    return self;
+};
+'use strict';
+
+let ProgrammingPidCollection = function () {
+
+    let self = {},
+        data = [],
+        $container;
+
+    self.put = function (element) {
+        data.push(element);
+    };
+
+    self.get = function () {
+        return data;
+    };
+
+    self.flush = function () {
+        data = [];
+    };
+
+    self.getCount = function () {
+        return data.length
+    };
+
+    self.open = function () {
+        self.render();
+        $container.show();
+    };
+
+    self.init = function ($element) {
+        $container = $element;
+    };
+
+    self.render = function () {
+        let $table = $container.find(".pid__table")
+        $table.find("tbody tr").remove();
+
+        for (let k in self.get()) {
+            if (self.get().hasOwnProperty(k)) {
+                self.get()[k].render(k, $table);
+            }
+        }
+
+        GUI.switchery();
+    };
+
+    self.update = function(statuses) {
+        let $table = $container.find(".pid__table")
+
+        for (let k in self.get()) {
+            if (self.get().hasOwnProperty(k)) {
+                self.get()[k].update(k, statuses.get(k), $table);
+            }
+        }
+    }
+
+    return self;
+};
+'use strict';
+
+let ProgrammingPidStatus = function () {
+
+    let self = {},
+        data = [];
+
+    self.set = function (condition, value) {
+        data[condition] = value;
+    }
+
+    self.get = function (condition) {
+        if (typeof data[condition] !== 'undefined') {
+            return data[condition];
+        } else {
+            return null;
+        }
+    }
+
+    self.getAll = function() {
+        return data;
+    }
+
+    self.update = function ($container) {
+        
+    }
+
+    self.init = function ($container) {
+
+    }
+
+    return self;
+};
 var VTX = (function() {
     var self = {};
 
@@ -30315,19 +30816,11 @@ presets.presets = [
                 value: 250
             },
             {
-                key: "gyro_lpf_hz",
+                key: "gyro_main_lpf_hz",
                 value: 130
             },
             {
-                key: "gyro_lpf_type",
-                value: "PT1"
-            },
-            {
-                key: "gyro_stage2_lowpass_hz",
-                value: 150
-            },
-            {
-                key: "gyro_stage2_lowpass_type",
+                key: "gyro_main_lpf_type",
                 value: "PT1"
             },
             {
@@ -30345,14 +30838,6 @@ presets.presets = [
             {
                 key: "dterm_lpf2_type",
                 value: "PT1"
-            },
-            {
-                key: "use_dterm_fir_filter",
-                value: "OFF"
-            },
-            {
-                key: "mc_iterm_relax_type",
-                value: "SETPOINT"
             },
             {
                 key: "mc_iterm_relax",
@@ -30431,7 +30916,7 @@ presets.presets = [
                 value: 70
             },
             {
-                key: "mc_airmode_type",
+                key: "airmode_type",
                 value: "THROTTLE_THRESHOLD"
             },
             {
@@ -30453,10 +30938,6 @@ presets.presets = [
             {
                 key: "throttle_idle",
                 value: 12
-            },
-            {
-                key: "dterm_setpoint_weight",
-                value: 0.500
             }
         ],
         type: 'multirotor'
@@ -30485,19 +30966,11 @@ presets.presets = [
                 value: 500
             },
             {
-                key: "gyro_lpf_hz",
+                key: "gyro_main_lpf_hz",
                 value: 110
             },
             {
-                key: "gyro_lpf_type",
-                value: "PT1"
-            },
-            {
-                key: "gyro_stage2_lowpass_hz",
-                value: 250
-            },
-            {
-                key: "gyro_stage2_lowpass_type",
+                key: "gyro_main_lpf_type",
                 value: "PT1"
             },
             {
@@ -30507,14 +30980,6 @@ presets.presets = [
             {
                 key: "dterm_lpf_type",
                 value: "PT1"
-            },
-            {
-                key: "use_dterm_fir_filter",
-                value: "OFF"
-            },
-            {
-                key: "mc_iterm_relax_type",
-                value: "SETPOINT"
             },
             {
                 key: "mc_iterm_relax",
@@ -30593,7 +31058,7 @@ presets.presets = [
                 value: 70
             },
             {
-                key: "mc_airmode_type",
+                key: "airmode_type",
                 value: "THROTTLE_THRESHOLD"
             },
             {
@@ -30615,10 +31080,6 @@ presets.presets = [
             {
                 key: "throttle_idle",
                 value: 12
-            },
-            {
-                key: "dterm_setpoint_weight",
-                value: 0.850
             }
         ],
         type: 'multirotor'
@@ -30647,19 +31108,11 @@ presets.presets = [
                 value: 500
             },
             {
-                key: "gyro_lpf_hz",
+                key: "gyro_main_lpf_hz",
                 value: 100
             },
             {
-                key: "gyro_lpf_type",
-                value: "PT1"
-            },
-            {
-                key: "gyro_stage2_lowpass_hz",
-                value: 160
-            },
-            {
-                key: "gyro_stage2_lowpass_type",
+                key: "gyro_main_lpf_type",
                 value: "PT1"
             },
             {
@@ -30677,14 +31130,6 @@ presets.presets = [
             {
                 key: "dterm_lpf2_type",
                 value: "PT1"
-            },
-            {
-                key: "use_dterm_fir_filter",
-                value: "OFF"
-            },
-            {
-                key: "mc_iterm_relax_type",
-                value: "SETPOINT"
             },
             {
                 key: "mc_iterm_relax",
@@ -30763,7 +31208,7 @@ presets.presets = [
                 value: 70
             },
             {
-                key: "mc_airmode_type",
+                key: "airmode_type",
                 value: "THROTTLE_THRESHOLD"
             },
             {
@@ -30785,189 +31230,6 @@ presets.presets = [
             {
                 key: "throttle_idle",
                 value: 12
-            },
-            {
-                key: "dterm_setpoint_weight",
-                value: 0.800
-            }
-        ],
-        type: 'multirotor'
-    },
-    {
-        name: 'Generic 10" Multirotor',
-        description: "General purpose 450-600 class multirotor with 10\", 2-bladed propellers.",
-        features: [
-            "DSHOT600",
-            "400dps rates",
-            "Improved PID defaults",
-            "Adjusted filtering"
-        ],
-        applyDefaults: ["INAV_PID_CONFIG", "RC_tuning", "PID_ADVANCED", "FILTER_CONFIG"],
-        settingsMSP: [],
-        settings: [
-            {
-                key: "platform_type",
-                value: "MULTIROTOR"
-            },
-            {
-                key: "motor_pwm_protocol",
-                value: "DSHOT600"
-            },
-            {
-                key: "gyro_hardware_lpf",
-                value: "256HZ"
-            },
-            {
-                key: "looptime",
-                value: 500
-            },
-            {
-                key: "gyro_lpf_hz",
-                value: 60
-            },
-            {
-                key: "gyro_lpf_type",
-                value: "PT1"
-            },
-            {
-                key: "gyro_stage2_lowpass_hz",
-                value: 120
-            },
-            {
-                key: "gyro_stage2_lowpass_type",
-                value: "PT1"
-            },
-            {
-                key: "dterm_lpf_hz",
-                value: 60
-            },
-            {
-                key: "dterm_lpf_type",
-                value: "PT1"
-            },
-            {
-                key: "dterm_lpf2_hz",
-                value: 0
-            },
-            {
-                key: "dterm_lpf2_type",
-                value: "PT1"
-            },
-            {
-                key: "use_dterm_fir_filter",
-                value: "OFF"
-            },
-            {
-                key: "mc_iterm_relax_type",
-                value: "SETPOINT"
-            },
-            {
-                key: "mc_iterm_relax",
-                value: "RPY"
-            },
-            {
-                key: "d_boost_factor",
-                value: 1.5
-            },
-            {
-                key: "d_boost_max_at_acceleration",
-                value: 5000.000
-            },
-            {
-                key: "d_boost_gyro_delta_lpf_hz",
-                value: 50
-            },
-            {
-                key: "antigravity_gain",
-                value: 2
-            },
-            {
-                key: "antigravity_accelerator",
-                value: 5
-            },
-            {
-                key: "rc_yaw_expo",
-                value: 70
-            },
-            {
-                key: "rc_expo",
-                value: 70
-            },
-            {
-                key: "roll_rate",
-                value: 70
-            },
-            {
-                key: "pitch_rate",
-                value: 70
-            },
-            {
-                key: "yaw_rate",
-                value: 60
-            },
-            {
-                key: "mc_p_pitch",
-                value: 44
-            },
-            {
-                key: "mc_i_pitch",
-                value: 60
-            },
-            {
-                key: "mc_d_pitch",
-                value: 25
-            },
-            {
-                key: "mc_p_roll",
-                value: 40
-            },
-            {
-                key: "mc_i_roll",
-                value: 50
-            },
-            {
-                key: "mc_d_roll",
-                value: 25
-            },
-            {
-                key: "mc_p_yaw",
-                value: 45
-            },
-            {
-                key: "mc_i_yaw",
-                value: 70
-            },
-            {
-                key: "mc_airmode_type",
-                value: "THROTTLE_THRESHOLD"
-            },
-            {
-                key: "dynamic_gyro_notch_enabled",
-                value: "ON"
-            },
-            {
-                key: "dynamic_gyro_notch_q",
-                value: 150
-            },
-            {
-                key: "dynamic_gyro_notch_min_hz",
-                value: 60
-            },
-            {
-                key: "min_check",
-                value: 1050
-            },
-            {
-                key: "throttle_idle",
-                value: 12
-            },
-            {
-                key: "dterm_setpoint_weight",
-                value: 0.300
-            },
-            {
-                key: "heading_hold_rate_limit",
-                value: 30
             }
         ],
         type: 'multirotor'
@@ -30996,19 +31258,11 @@ presets.presets = [
                 value: 250
             },
             {
-                key: "gyro_lpf_hz",
+                key: "gyro_main_lpf_hz",
                 value: 130
             },
             {
-                key: "gyro_lpf_type",
-                value: "PT1"
-            },
-            {
-                key: "gyro_stage2_lowpass_hz",
-                value: 180
-            },
-            {
-                key: "gyro_stage2_lowpass_type",
+                key: "gyro_main_lpf_type",
                 value: "PT1"
             },
             {
@@ -31034,14 +31288,6 @@ presets.presets = [
             {
                 key: "dterm_lpf2_type",
                 value: "PT1"
-            },
-            {
-                key: "use_dterm_fir_filter",
-                value: "OFF"
-            },
-            {
-                key: "mc_iterm_relax_type",
-                value: "GYRO"
             },
             {
                 key: "mc_iterm_relax",
@@ -31120,7 +31366,7 @@ presets.presets = [
                 value: 70
             },
             {
-                key: "mc_airmode_type",
+                key: "airmode_type",
                 value: "THROTTLE_THRESHOLD"
             },
             {
@@ -31142,10 +31388,6 @@ presets.presets = [
             {
                 key: "throttle_idle",
                 value: 12
-            },
-            {
-                key: "dterm_setpoint_weight",
-                value: 0.400
             }
         ],
         type: 'multirotor'
@@ -31174,19 +31416,11 @@ presets.presets = [
                 value: 250
             },
             {
-                key: "gyro_lpf_hz",
+                key: "gyro_main_lpf_hz",
                 value: 115
             },
             {
-                key: "gyro_lpf_type",
-                value: "PT1"
-            },
-            {
-                key: "gyro_stage2_lowpass_hz",
-                value: 0
-            },
-            {
-                key: "gyro_stage2_lowpass_type",
+                key: "gyro_main_lpf_type",
                 value: "PT1"
             },
             {
@@ -31204,14 +31438,6 @@ presets.presets = [
             {
                 key: "dterm_lpf2_type",
                 value: "PT1"
-            },
-            {
-                key: "use_dterm_fir_filter",
-                value: "OFF"
-            },
-            {
-                key: "mc_iterm_relax_type",
-                value: "SETPOINT"
             },
             {
                 key: "mc_iterm_relax",
@@ -31290,7 +31516,7 @@ presets.presets = [
                 value: 70
             },
             {
-                key: "mc_airmode_type",
+                key: "airmode_type",
                 value: "THROTTLE_THRESHOLD"
             },
             {
@@ -31312,10 +31538,6 @@ presets.presets = [
             {
                 key: "throttle_idle",
                 value: 12
-            },
-            {
-                key: "dterm_setpoint_weight",
-                value: 0.850
             }
         ],
         type: 'multirotor'
@@ -31344,19 +31566,11 @@ presets.presets = [
                 value: 500
             },
             {
-                key: "gyro_lpf_hz",
+                key: "gyro_main_lpf_hz",
                 value: 100
             },
             {
-                key: "gyro_lpf_type",
-                value: "PT1"
-            },
-            {
-                key: "gyro_stage2_lowpass_hz",
-                value: 250
-            },
-            {
-                key: "gyro_stage2_lowpass_type",
+                key: "gyro_main_lpf_type",
                 value: "PT1"
             },
             {
@@ -31374,14 +31588,6 @@ presets.presets = [
             {
                 key: "dterm_lpf2_type",
                 value: "PT1"
-            },
-            {
-                key: "use_dterm_fir_filter",
-                value: "OFF"
-            },
-            {
-                key: "mc_iterm_relax_type",
-                value: "SETPOINT"
             },
             {
                 key: "mc_iterm_relax",
@@ -31460,7 +31666,7 @@ presets.presets = [
                 value: 70
             },
             {
-                key: "mc_airmode_type",
+                key: "airmode_type",
                 value: "THROTTLE_THRESHOLD"
             },
             {
@@ -31482,331 +31688,350 @@ presets.presets = [
             {
                 key: "throttle_idle",
                 value: 12
-            },
-            {
-                key: "dterm_setpoint_weight",
-                value: 0.700
             }
         ],
         type: 'multirotor'
     },
-    {
-        name: "Generic Airplane",
-        description: "General setup for airplanes.",
-        features: [
-            "Adjusted gyro filtering",
-            "Adjusted PIDs",
-            "Adjusted rates"
-        ],
+	{
+		name: 'Airplane with a tail',
+        description: "General setup for airplanes with tails.",
+        features: ["Adjusted gyro filtering", "Adjusted PIDs", "Adjusted rates"],
         applyDefaults: ["INAV_PID_CONFIG", "RC_tuning", "PID_ADVANCED", "FILTER_CONFIG"],
-        settingsMSP: [
-            presets.elementHelper("RC_tuning", "roll_rate", 200),
-            presets.elementHelper("RC_tuning", "pitch_rate", 150),
-            presets.elementHelper("RC_tuning", "yaw_rate", 90),
-            presets.elementHelper("INAV_PID_CONFIG", "gyroscopeLpf", 1)
-        ],
+        settingsMSP: [],
+		type: 'airplane',
         settings: [
-            {
+	{
                 key: "platform_type",
                 value: "AIRPLANE"
-            },
-            {
-                key: "rc_expo",
-                value: 30
-            },
-            {
-                key: "manual_rc_expo",
-                value: 30
-            }
-        ],
-        type: 'airplane'
-    },
-    {
-        name: "Flying Wing Z84",
-        description: "Small flying wing on multirotor racer parts. 3S/4S battery, AUW under 500g.",
-        features: [
-            "Adjusted gyro filtering",
-            "Adjusted PIDs",
-            "Adjusted rates"
-        ],
-        applyDefaults: ["INAV_PID_CONFIG", "RC_tuning", "PID_ADVANCED", "FILTER_CONFIG"],
-        settingsMSP: [
-            presets.elementHelper("RC_tuning", "roll_rate", 350),
-            presets.elementHelper("RC_tuning", "pitch_rate", 90),
-            presets.elementHelper("RC_tuning", "dynamic_THR_PID", 33),
-            presets.elementHelper("RC_tuning", "dynamic_THR_breakpoint", 1300),
-            presets.elementHelper("INAV_PID_CONFIG", "gyroscopeLpf", 4)
-        ],
-        settings: [
-            {
-                key: "platform_type",
-                value: "AIRPLANE"
-            },
-            {
-                key: "fw_p_pitch",
-                value: 2
-            },
-            {
-                key: "fw_i_pitch",
-                value: 15
-            },
-            {
-                key: "fw_ff_pitch",
-                value: 70
-            },
-            {
-                key: "fw_p_roll",
-                value: 2
-            },
-            {
-                key: "fw_i_roll",
-                value: 15
-            },
-            {
-                key: "fw_ff_roll",
-                value: 30
-            },
-            {
-                key: "rc_expo",
-                value: 30
-            },
-            {
-                key: "manual_rc_expo",
-                value: 30
-            }
-        ],
-        type: 'flyingwing'
-    },
-    {
-        name: "Flying Wing S800 Sky Shadow",
-        description: "Flying wing on multirotor racer parts. 3S/4S battery and FPV equipment. AUW under 1000g.",
-        features: [
-            "Adjusted gyro filtering",
-            "Adjusted PIDs",
-            "Adjusted rates"
-        ],
-        applyDefaults: ["INAV_PID_CONFIG", "RC_tuning", "PID_ADVANCED", "FILTER_CONFIG"],
-        settingsMSP: [
-            presets.elementHelper("INAV_PID_CONFIG", "gyroscopeLpf", 0),
-            presets.elementHelper("FILTER_CONFIG", "gyroSoftLpfHz", 40),
-            presets.elementHelper("RC_tuning", "roll_rate", 280),
-            presets.elementHelper("RC_tuning", "pitch_rate", 140),
-            presets.elementHelper("RC_tuning", "dynamic_THR_PID", 20),
-            presets.elementHelper("RC_tuning", "dynamic_THR_breakpoint", 1600)
-        ],
-        settings: [
-            {
-                key: "platform_type",
-                value: "AIRPLANE"
-            },
-            {
-                key: "fw_p_pitch",
-                value: 6
-            },
-            {
-                key: "fw_i_pitch",
-                value: 9
-            },
-            {
-                key: "fw_ff_pitch",
-                value: 52
-            },
-            {
-                key: "fw_p_roll",
-                value: 6
-            },
-            {
-                key: "fw_i_roll",
-                value: 6
-            },
-            {
-                key: "fw_ff_roll",
-                value: 49
-            },
-            {
-                key: "rc_expo",
-                value: 30
-            },
-            {
-                key: "manual_rc_expo",
-                value: 30
-            }
-        ],
-        type: 'flyingwing'
-    },
-    {
-        name: "Ritewing Mini Drak",
-        description: "8x6 propeller, 2216 1400kV motor, 4S LiPo. AUW above 1200g.",
-        features: [
-            "Adjusted gyro filtering",
-            "Adjusted PIDs",
-            "Adjusted rates"
-        ],
-        applyDefaults: ["INAV_PID_CONFIG", "RC_tuning", "PID_ADVANCED", "FILTER_CONFIG"],
-        settingsMSP: [
-            presets.elementHelper("INAV_PID_CONFIG", "gyroscopeLpf", 0),
-            presets.elementHelper("FILTER_CONFIG", "gyroSoftLpfHz", 35),
-            presets.elementHelper("RC_tuning", "roll_rate", 260),
-            presets.elementHelper("RC_tuning", "pitch_rate", 140),
-            presets.elementHelper("RC_tuning", "dynamic_THR_PID", 30),
-            presets.elementHelper("RC_tuning", "dynamic_THR_breakpoint", 1550)
-        ],
-        settings: [
-            {
-                key: "platform_type",
-                value: "AIRPLANE"
-            },
-            {
-                key: "fw_p_pitch",
-                value: 5
-            },
-            {
-                key: "fw_i_pitch",
-                value: 14
-            },
-            {
-                key: "fw_ff_pitch",
-                value: 56
-            },
-            {
-                key: "fw_p_roll",
-                value: 7
-            },
-            {
-                key: "fw_i_roll",
-                value: 12
-            },
-            {
-                key: "fw_ff_roll",
-                value: 25
-            },
-            {
-                key: "rc_expo",
-                value: 30
-            },
-            {
-                key: "manual_rc_expo",
-                value: 30
-            }
-        ],
-        type: 'flyingwing'
-    },
-    {
-        name: "ZOHD Dart 250g",
-        description: "3x5x3 propeller, 1406 2600kV motor, 3S LiPo. 570mm wingspan, AUW potentially under 250g on 2S.<br /><br /><strong>Please set the Stabilised Roll weight to 80, and the Stabilised Pitch weight to 65.</strong>",
-        features: [
-            "Adjusted gyro filtering",
-            "Adjusted PIDs",
-            "Adjusted rates"
-        ],
-        applyDefaults: ["INAV_PID_CONFIG", "RC_tuning", "PID_ADVANCED", "FILTER_CONFIG"],
-        settingsMSP: [
-            presets.elementHelper("INAV_PID_CONFIG", "gyroscopeLpf", 3),
-            presets.elementHelper("FILTER_CONFIG", "gyroSoftLpfHz", 30),
-            presets.elementHelper("RC_tuning", "roll_rate", 360),
-            presets.elementHelper("RC_tuning", "pitch_rate", 130),
-            presets.elementHelper("RC_tuning", "dynamic_THR_PID", 30),
-            presets.elementHelper("RC_tuning", "dynamic_THR_breakpoint", 1500)
-        ],
-        settings: [
-            {
-                key: "platform_type",
-                value: "AIRPLANE"
-            },
-            {
-                key: "fw_p_pitch",
+	},
+	{
+                key: "applied_defaults",
                 value: 3
-            },
-            {
-                key: "fw_i_pitch",
-                value: 7
-            },
-            {
-                key: "fw_ff_pitch",
+	},
+	{
+                key: "gyro_hardware_lpf",
+                value: "256HZ"
+	},
+	{
+                key: "gyro_main_lpf_hz",
+                value: 25
+	},
+	{
+                key: "dterm_lpf_hz",
                 value: 40
-            },
-            {
-                key: "fw_p_roll",
-                value: 2
-            },
-            {
-                key: "fw_i_roll",
-                value: 4
-            },
-            {
-                key: "fw_ff_roll",
-                value: 18
-            },
-            {
-                key: "rc_expo",
-                value: 70
-            },
-            {
-                key: "manual_rc_expo",
-                value: 70
-            },
-            {
-                key: "rc_yaw_expo",
-                value: 20
-            }
-        ],
-        type: 'flyingwing'
     },
     {
-        name: "SonicModell Mini AR Wing",
-        description: "5x4.5 propeller, 1805 2400kV motor, 3S LiPo. 600mm wingspan, AUW under 400g.",
-        features: [
-            "Adjusted gyro filtering",
-            "Adjusted PIDs",
-            "Adjusted rates"
-        ],
-        applyDefaults: ["INAV_PID_CONFIG", "RC_tuning", "PID_ADVANCED", "FILTER_CONFIG"],
-        settingsMSP: [
-            presets.elementHelper("INAV_PID_CONFIG", "gyroscopeLpf", 0),
-            presets.elementHelper("FILTER_CONFIG", "gyroSoftLpfHz", 35),
-            presets.elementHelper("RC_tuning", "roll_rate", 280),
-            presets.elementHelper("RC_tuning", "pitch_rate", 120)
-        ],
-        settings: [
-            {
-                key: "platform_type",
-                value: "AIRPLANE"
-            },
-            {
-                key: "fw_p_pitch",
-                value: 5
-            },
-            {
-                key: "fw_i_pitch",
+                key: "d_boost_factor",
+                value: 1
+    },
+	{
+                key: "gyro_main_lpf_type",
+                value: "BIQUAD"
+	},
+	{
+                key: "dynamic_gyro_notch_enabled",
+                value: "ON"
+	},
+	{
+                key: "dynamic_gyro_notch_q",
+                value: 250
+	},
+	{
+                key: "dynamic_gyro_notch_min_hz",
+                value: 30
+	},
+	{
+                key: "motor_pwm_protocol",
+                value: "STANDARD"
+	},
+	{ 
+                key: "throttle_idle",
+                value: 5.0
+	},
+	{
+                key: "rc_yaw_expo",
+                value: 30
+	},
+	{
+                key: "rc_expo",
+                value: 30
+	},
+	{
+                key: "roll_rate",
                 value: 18
-            },
-            {
+	},
+	{
+                key: "pitch_rate",
+                value: 9
+	},
+	{
+                key: "yaw_rate",
+                value: 3
+	},
+	{ 
+                key: "nav_fw_pos_z_p",
+				value: 20
+	},
+	{ 
+                key: "nav_fw_pos_z_d",
+                value: 5
+	},
+	{ 
+                key: "nav_fw_pos_xy_p",
+                value: 50
+	},
+	{ 
+                key: "fw_turn_assist_pitch_gain",
+                value: 0.5
+	},
+	{ 
+                key: "max_angle_inclination_rll",
+                value: 350
+	},
+	{ 
+                key: "nav_fw_bank_angle",
+                value: 35
+	},
+	{ 
+                key: "fw_p_pitch",
+                value: 15
+	},
+	{ 
+                key: "fw_i_pitch",
+                value: 10
+	},
+	{ 
                 key: "fw_ff_pitch",
                 value: 60
-            },
-            {
+	},
+	{ 
                 key: "fw_p_roll",
-                value: 8
-            },
-            {
+                value: 10
+	},
+	{ 
                 key: "fw_i_roll",
-                value: 16
-            },
-            {
+                value: 8
+	},
+	{ 
                 key: "fw_ff_roll",
-                value: 64
-            },
-            {
+                value: 40
+	},
+	{ 
+                key: "fw_p_yaw",
+                value: 20
+	},
+	{ 
+                key: "fw_i_yaw",
+                value: 5
+	},
+	{ 
+                key: "fw_ff_yaw",
+                value: 100
+	},
+	{
+                key: "imu_acc_ignore_rate",
+                value: 10
+	},
+	{
+                key: "airmode_type",
+                value: "STICK_CENTER_ONCE"
+	},
+	{
+                key: "small_angle",
+                value: 180
+	},
+	{
+                key: "nav_fw_control_smoothness",
+                value: 2
+	},
+	{
+                key: "nav_rth_allow_landing",
+                value: "FS_ONLY"
+	},
+	{
+                key: "nav_rth_altitude",
+                value: 5000
+	},
+	{
+                key: "failsafe_mission",
+		value: "ON"
+	},
+	{
+                key: "nav_wp_radius",
+                value: 1500
+	},
+		],
+    },
+    {
+        name: "Airplane without tail",
+        description: "General setup for airplanes without tails: Flying Wing, Delta, etc.",
+		features: ["Adjusted gyro filtering", "Adjusted PIDs", "Adjusted rates"],
+        applyDefaults: ["INAV_PID_CONFIG", "RC_tuning", "PID_ADVANCED", "FILTER_CONFIG"],
+        settingsMSP: [],
+		type: 'flyingwing',
+        settings: [
+	{
+                key: "platform_type",
+                value: "AIRPLANE"
+	},
+	{
+                key: "applied_defaults",
+                value: 3
+	},
+	{
+                key: "gyro_hardware_lpf",
+                value: "256HZ"
+	},
+	{
+                 key: "gyro_main_lpf_hz",
+                 value: 25
+	},
+	{
+                key: "dterm_lpf_hz",
+                value: 40
+    },
+    {
+                key: "d_boost_factor",
+                value: 1
+    },
+	{
+                key: "gyro_main_lpf_type",
+                value: "BIQUAD"
+	},
+	{
+                key: "dynamic_gyro_notch_enabled",
+                value: "ON"
+	},
+	{
+                key: "dynamic_gyro_notch_q",
+                value: 250
+	},
+	{
+                key: "dynamic_gyro_notch_min_hz",
+                value: 30
+	},
+	{
+                key: "motor_pwm_protocol",
+                value: "STANDARD"
+	},
+	{ 
+                key: "throttle_idle",
+                value: 5.0
+	},
+	{
+                key: "rc_yaw_expo",
+                value: 30
+	},
+	{
                 key: "rc_expo",
                 value: 30
-            },
-            {
-                key: "manual_rc_expo",
-                value: 30
-            }
-        ],
-        type: 'flyingwing'
-    }
+	},
+	{
+                key: "roll_rate",
+                value: 18
+	},
+	{
+                key: "pitch_rate",
+                value: 9
+	},
+	{
+                key: "yaw_rate",
+                value: 3
+	},
+	{ 
+                key: "nav_fw_pos_z_p",
+                value: 20
+	},
+	{ 
+                key: "nav_fw_pos_z_d",
+                value: 5
+	},
+	{ 
+                key: "nav_fw_pos_xy_p",
+                value: 50
+	},
+	{ 
+                key: "fw_turn_assist_pitch_gain",
+                value: 0.2
+	},
+	{ 
+                key: "max_angle_inclination_rll",
+                value: 450
+	},
+	{ 
+                key: "nav_fw_bank_angle",
+                value: 45
+	},
+	{ 
+                key: "fw_p_pitch",
+                value: 10
+	},
+	{ 
+                key: "fw_i_pitch",
+                value: 15
+	},
+	{ 
+                key: "fw_ff_pitch",
+                value: 70
+	},
+	{ 
+                key: "fw_p_roll",
+                value: 5
+	},
+	{ 
+                key: "fw_i_roll",
+                value: 8
+	},
+	{ 
+                key: "fw_ff_roll",
+                value: 35
+	},
+	{ 
+                key: "fw_p_yaw",
+                value: 20
+	},
+	{ 
+                key: "fw_i_yaw",
+                value: 5
+	},
+	{ 
+                key: "fw_ff_yaw",
+                value: 100
+	},
+	{
+                key: "imu_acc_ignore_rate",
+                value: 10
+	},
+	{
+                key: "airmode_type",
+                value: "STICK_CENTER_ONCE"
+	},
+	{
+                key: "small_angle",
+                value: 180
+	},
+	{
+                key: "nav_fw_control_smoothness",
+                value: 2
+	},
+	{
+                key: "nav_rth_allow_landing",
+                value: "FS_ONLY"
+	},
+	{
+                key: "nav_rth_altitude",
+                value: 5000
+	},
+	{
+                key: "failsafe_mission",
+                value: "ON"
+	},
+	{
+                key: "nav_wp_radius",
+                value: 1500
+	},
+	],
+    },
 ];
 
 /*global $*/
@@ -31875,7 +32100,7 @@ TABS.adjustments.initialize = function (callback) {
 
         // update list of selected functions
         var functionListOptions = $(functionList).find('option');
-        var availableFunctionCount = 53;
+        var availableFunctionCount = 57; // Set this to highest adjustment value + 1
 
         var functionListOptions = $(functionListOptions).slice(0,availableFunctionCount);
         functionList.empty().append(functionListOptions);
@@ -32096,109 +32321,39 @@ TABS.advanced_tuning = {};
 
 TABS.advanced_tuning.initialize = function (callback) {
 
-    var loadChainer = new MSPChainerClass(),
-        saveChainer = new MSPChainerClass();
-
     if (GUI.active_tab != 'advanced_tuning') {
         GUI.active_tab = 'advanced_tuning';
         googleAnalytics.sendAppView('AdvancedTuning');
     }
 
-    loadChainer.setChain([
-        mspHelper.loadNavPosholdConfig,
-        mspHelper.loadPositionEstimationConfig,
-        mspHelper.loadRthAndLandConfig,
-        mspHelper.loadFwConfig,
-        mspHelper.loadBrakingConfig
-    ]);
-    loadChainer.setExitPoint(loadHtml);
-    loadChainer.execute();
-
-    saveChainer.setChain([
-        mspHelper.saveNavPosholdConfig,
-        mspHelper.savePositionEstimationConfig,
-        mspHelper.saveRthAndLandConfig,
-        mspHelper.saveFwConfig,
-        mspHelper.saveBrakingConfig,
-        mspHelper.saveToEeprom
-    ]);
-    saveChainer.setExitPoint(reboot);
+    loadHtml();
 
     function loadHtml() {
         GUI.load("./tabs/advanced_tuning.html", Settings.processHtml(function () {
 
-             var $userControlMode = $('#user-control-mode'),
-            $useMidThrottle = $("#use-mid-throttle"),
-            $rthClimbFirst = $('#rth-climb-first'),
-            $rthClimbIgnoreEmergency = $('#rthClimbIgnoreEmergency'),
-            $rthTailFirst = $('#rthTailFirst'),
-            $rthAllowLanding = $('#rthAllowLanding'),
-            $rthAltControlMode = $('#rthAltControlMode');
-
-        $rthClimbFirst.prop("checked", RTH_AND_LAND_CONFIG.rthClimbFirst);
-        $rthClimbFirst.change(function () {
-            if ($(this).is(":checked")) {
-                RTH_AND_LAND_CONFIG.rthClimbFirst = 1;
-            } else {
-                RTH_AND_LAND_CONFIG.rthClimbFirst = 0;
-            }
-        });
-        $rthClimbFirst.change();
-
-        $rthClimbIgnoreEmergency.prop("checked", RTH_AND_LAND_CONFIG.rthClimbIgnoreEmergency);
-        $rthClimbIgnoreEmergency.change(function () {
-            if ($(this).is(":checked")) {
-                RTH_AND_LAND_CONFIG.rthClimbIgnoreEmergency = 1;
-            } else {
-                RTH_AND_LAND_CONFIG.rthClimbIgnoreEmergency = 0;
-            }
-        });
-        $rthClimbIgnoreEmergency.change();
-
-        $rthTailFirst.prop("checked", RTH_AND_LAND_CONFIG.rthTailFirst);
-        $rthTailFirst.change(function () {
-            if ($(this).is(":checked")) {
-                RTH_AND_LAND_CONFIG.rthTailFirst = 1;
-            } else {
-                RTH_AND_LAND_CONFIG.rthTailFirst = 0;
-            }
-        });
-        $rthTailFirst.change();
-
-        GUI.fillSelect($rthAltControlMode, FC.getRthAltControlMode(), RTH_AND_LAND_CONFIG.rthAltControlMode);
-        $rthAltControlMode.val(RTH_AND_LAND_CONFIG.rthAltControlMode);
-        $rthAltControlMode.change(function () {
-            RTH_AND_LAND_CONFIG.rthAltControlMode = $rthAltControlMode.val();
-        });
-        GUI.fillSelect($rthAllowLanding, FC.getRthAllowLanding(), RTH_AND_LAND_CONFIG.rthAllowLanding);
-        $rthAllowLanding.val(RTH_AND_LAND_CONFIG.rthAllowLanding);
-        $rthAllowLanding.change(function () {
-            RTH_AND_LAND_CONFIG.rthAllowLanding = $rthAllowLanding.val();
-        });
-
-        GUI.fillSelect($userControlMode, FC.getUserControlMode(), NAV_POSHOLD.userControlMode);
-        $userControlMode.val(NAV_POSHOLD.userControlMode);
-        $userControlMode.change(function () {
-            NAV_POSHOLD.userControlMode = $userControlMode.val();
-        });
-
-        $useMidThrottle.prop("checked", NAV_POSHOLD.useThrottleMidForAlthold);
-        $useMidThrottle.change(function () {
-            if ($(this).is(":checked")) {
-                NAV_POSHOLD.useThrottleMidForAlthold = 1;
-            } else {
-                NAV_POSHOLD.useThrottleMidForAlthold = 0;
-            }
-        });
-        $useMidThrottle.change();
+        if (FC.isAirplane()) {
+            $('.airplaneTuning').show();
+            $('.airplaneTuningTitle').show();
+            $('.multirotorTuning').hide();
+            $('.multirotorTuningTitle').hide();
+            $('.notFixedWingTuning').hide();
+        } else if (FC.isMultirotor()) {
+            $('.airplaneTuning').hide();
+            $('.airplaneTuningTitle').hide();
+            $('.multirotorTuning').show();
+            $('.multirotorTuningTitle').show();
+            $('.notFixedWingTuning').show();
+        } else {
+            $('.airplaneTuning').show();
+            $('.airplaneTuningTitle').hide();
+            $('.multirotorTuning').show();
+            $('.multirotorTuningTitle').hide();
+            $('.notFixedWingTuning').show();
+        }
 
         GUI.simpleBind();
 
         localize();
-
-        $('#advanced-tuning-save-button').click(function () {
-            saveChainer.execute();
-        });
         
         $('a.save').click(function () {
             Settings.saveInputs().then(function () {
@@ -32209,6 +32364,7 @@ TABS.advanced_tuning.initialize = function (callback) {
                 setTimeout(function () {
                     $(self).html(oldText);
                 }, 2000);
+                reboot();
             });
         });
         GUI.content_ready(callback);
@@ -32239,6 +32395,8 @@ TABS.advanced_tuning.cleanup = function (callback) {
 
 'use strict';
 
+var ORIG_AUX_CONFIG_IDS = [];
+
 TABS.auxiliary = {};
 
 TABS.auxiliary.initialize = function (callback) {
@@ -32267,10 +32425,73 @@ TABS.auxiliary.initialize = function (callback) {
     }
 
     function load_html() {
+        sort_modes_for_display();
         GUI.load("./tabs/auxiliary.html", process_html);
     }
 
     MSP.send_message(MSPCodes.MSP_BOXNAMES, false, false, get_mode_ranges);
+
+    function sort_modes_for_display() {
+        // This array defines the order that the modes are displayed in the configurator modes page
+        configuratorBoxOrder = [
+            "ARM", "PREARM",                                                                           // Arming
+            "ANGLE", "HORIZON", "MANUAL",                                                              // Flight modes
+            "NAV RTH", "NAV POSHOLD", "NAV CRUISE", "NAV COURSE HOLD",                                 // Navigation mode
+            "NAV ALTHOLD", "HEADING HOLD", "AIR MODE",                                                 // Flight mode modifiers
+            "NAV WP", "GCS NAV", "HOME RESET",                                                         // Navigation
+            "SERVO AUTOTRIM", "AUTO TUNE", "NAV LAUNCH", "LOITER CHANGE", "FLAPERON",                  // Fixed wing specific
+            "TURTLE", "FPV ANGLE MIX", "TURN ASSIST", "MC BRAKING", "SURFACE", "HEADFREE", "HEADADJ",  // Multi-rotor specific
+            "BEEPER", "LEDS OFF", "LIGHTS",                                                            // Feedback
+            "OSD OFF", "OSD ALT 1", "OSD ALT 2", "OSD ALT 3",                                          // OSD
+            "CAMSTAB", "CAMERA CONTROL 1", "CAMERA CONTROL 2", "CAMERA CONTROL 3",                     // FPV Camera
+            "BLACKBOX", "FAILSAFE", "KILLSWITCH", "TELEMETRY", "MSP RC OVERRIDE", "USER1", "USER2"     // Misc
+        ];
+
+        // Sort the modes
+        var tmpAUX_CONFIG = [];
+        var tmpAUX_CONFIG_IDS =[];
+        var found = false;
+        var sortedID = 0;
+
+        for (i=0; i<AUX_CONFIG.length; i++) {
+            tmpAUX_CONFIG[i] = AUX_CONFIG[i];
+            tmpAUX_CONFIG_IDS[i] = AUX_CONFIG_IDS[i];   
+        }
+
+        AUX_CONFIG = [];
+        AUX_CONFIG_IDS = [];
+
+        for (i=0; i<configuratorBoxOrder.length; i++) {
+            for(j=0; j<tmpAUX_CONFIG.length; j++) {
+                if (configuratorBoxOrder[i] === tmpAUX_CONFIG[j]) {
+                    AUX_CONFIG[sortedID] = tmpAUX_CONFIG[j];
+                    AUX_CONFIG_IDS[sortedID] = tmpAUX_CONFIG_IDS[j];
+                    ORIG_AUX_CONFIG_IDS[sortedID++] = j;
+
+                    break;
+                }
+            }
+        }
+
+        // There are modes that are missing from the configuratorBoxOrder array. Add them to the end until they are ordered correctly.
+        if (tmpAUX_CONFIG.length > AUX_CONFIG.length) {
+            for (i=0; i<tmpAUX_CONFIG.length; i++) {
+                found = false;
+                for (j=0; j<AUX_CONFIG.length; j++) {
+                    if (tmpAUX_CONFIG[i] === AUX_CONFIG[j]) {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found) {
+                    AUX_CONFIG[sortedID] = tmpAUX_CONFIG[i];
+                    AUX_CONFIG_IDS[sortedID] = tmpAUX_CONFIG_IDS[i];
+                    ORIG_AUX_CONFIG_IDS[sortedID++] = i;
+                }
+            }
+        }
+    }
 
     function createMode(modeIndex, modeId) {
         var modeTemplate = $('#tab-auxiliary-templates .mode');
@@ -32284,6 +32505,7 @@ TABS.auxiliary.initialize = function (callback) {
 
         $(newMode).data('index', modeIndex);
         $(newMode).data('id', modeId);
+        $(newMode).data('origId', ORIG_AUX_CONFIG_IDS[modeIndex]);
 
         $(newMode).find('.name').data('modeElement', newMode);
         $(newMode).find('a.addRange').data('modeElement', newMode);
@@ -32524,10 +32746,10 @@ TABS.auxiliary.initialize = function (callback) {
                     continue;
                 }
 
-                if (FC.isModeBitSet(i)) {
-                    $('.mode .name').eq(i).data('modeElement').addClass('on').removeClass('off');
+                if (FC.isModeBitSet(modeElement.data('origId'))) {
+                    $('.mode .name').eq(modeElement.data('index')).data('modeElement').addClass('on').removeClass('off');
                 } else {
-                    $('.mode .name').eq(i).data('modeElement').removeClass('on').addClass('off');
+                    $('.mode .name').eq(modeElement.data('index')).data('modeElement').removeClass('on').addClass('off');
                 }
             }
 
@@ -33566,8 +33788,6 @@ TABS.configuration.initialize = function (callback, scrollPosition) {
         $('#content').scrollTop((scrollPosition) ? scrollPosition : 0);
 
         // fill board alignment
-        $('input[name="board_align_roll"]').val((BF_CONFIG.board_align_roll / 10.0).toFixed(1));
-        $('input[name="board_align_pitch"]').val((BF_CONFIG.board_align_pitch / 10.0).toFixed(1));
         $('input[name="board_align_yaw"]').val((BF_CONFIG.board_align_yaw / 10.0).toFixed(1));
 
         // fill magnetometer
@@ -33625,12 +33845,9 @@ TABS.configuration.initialize = function (callback, scrollPosition) {
 
         $i2cSpeed.change();
 
-        var $looptime = $("#looptime");
-
-        var $gyroLpf = $("#gyro-lpf"),
-            $gyroLpfMessage = $('#gyrolpf-info');
-
-        var values = FC.getGyroLpfValues();
+        let $looptime = $("#looptime"),
+            $gyroLpf = $("#gyro-lpf"),
+            values = FC.getGyroLpfValues();
 
         for (i in values) {
             if (values.hasOwnProperty(i)) {
@@ -33652,43 +33869,6 @@ TABS.configuration.initialize = function (callback, scrollPosition) {
             );
             $looptime.val(FC.getLooptimes()[FC.getGyroLpfValues()[INAV_PID_CONFIG.gyroscopeLpf].tick].defaultLooptime);
             $looptime.change();
-
-            $gyroLpfMessage.hide();
-            $gyroLpfMessage.removeClass('ok-box');
-            $gyroLpfMessage.removeClass('info-box');
-            $gyroLpfMessage.removeClass('warning-box');
-
-            if (MIXER_CONFIG.platformType == PLATFORM_MULTIROTOR || MIXER_CONFIG.platformType == PLATFORM_TRICOPTER) {
-                switch (parseInt(INAV_PID_CONFIG.gyroscopeLpf, 10)) {
-                    case 0:
-                        $gyroLpfMessage.html(chrome.i18n.getMessage('gyroLpfSuggestedMessage'));
-                        $gyroLpfMessage.addClass('ok-box');
-                        $gyroLpfMessage.show();
-                        break;
-                    case 1:
-                        $gyroLpfMessage.html(chrome.i18n.getMessage('gyroLpfWhyNotHigherMessage'));
-                        $gyroLpfMessage.addClass('info-box');
-                        $gyroLpfMessage.show();
-                        break;
-                    case 2:
-                        $gyroLpfMessage.html(chrome.i18n.getMessage('gyroLpfWhyNotSlightlyHigherMessage'));
-                        $gyroLpfMessage.addClass('info-box');
-                        $gyroLpfMessage.show();
-                        break
-                    case 3:
-                        $gyroLpfMessage.html(chrome.i18n.getMessage('gyroLpfNotAdvisedMessage'));
-                        $gyroLpfMessage.addClass('info-box');
-                        $gyroLpfMessage.show();
-                        break;
-                    case 4:
-                    case 5:
-                        $gyroLpfMessage.html(chrome.i18n.getMessage('gyroLpfNotFlyableMessage'));
-                        $gyroLpfMessage.addClass('warning-box');
-                        $gyroLpfMessage.show();
-                        break;
-                }
-
-            }
         });
 
         $gyroLpf.change();
@@ -33701,11 +33881,6 @@ TABS.configuration.initialize = function (callback, scrollPosition) {
                 $('#looptime-warning').show();
             } else {
                 $('#looptime-warning').hide();
-            }
-
-            if (INAV_PID_CONFIG.asynchronousMode == 0) {
-                //All task running together
-                ADVANCED_CONFIG.gyroSyncDenominator = Math.floor(FC_CONFIG.loopTime / FC.getGyroLpfValues()[INAV_PID_CONFIG.gyroscopeLpf].tick);
             }
         });
         $looptime.change();
@@ -33821,8 +33996,6 @@ TABS.configuration.initialize = function (callback, scrollPosition) {
             helper.features.reset();
             helper.features.fromUI($('.tab-configuration'));
             helper.features.execute(function () {
-                BF_CONFIG.board_align_roll = Math.round(parseFloat($('input[name="board_align_roll"]').val()) * 10);
-                BF_CONFIG.board_align_pitch = Math.round(parseFloat($('input[name="board_align_pitch"]').val()) * 10);
                 BF_CONFIG.board_align_yaw = Math.round(parseFloat($('input[name="board_align_yaw"]').val()) * 10);
                 BF_CONFIG.currentscale = parseInt($('#currentscale').val());
                 BF_CONFIG.currentoffset = Math.round(parseFloat($('#currentoffset').val()) * 10);
@@ -34029,6 +34202,7 @@ TABS.failsafe.cleanup = function (callback) {
     if (callback) callback();
 };
 
+/*global $,nwdialog*/
 'use strict';
 
 TABS.firmware_flasher = {};
@@ -34215,57 +34389,41 @@ TABS.firmware_flasher.initialize = function (callback) {
             $('select[name="release"]').empty().append('<option value="0">Offline</option>');
         });
 
-        // UI Hooks
-        $('a.load_file').click(function () {
-            chrome.fileSystem.chooseEntry({type: 'openFile', accepts: [{extensions: ['hex']}]}, function (fileEntry) {
-                if (chrome.runtime.lastError) {
-                    console.error(chrome.runtime.lastError.message);
+        $('a.load_file').on('click', function () {
 
-                    return;
-                }
-
-                // hide github info (if it exists)
+            nwdialog.setContext(document);
+            nwdialog.openFileDialog('.hex', function(filename) {
+                const fs = require('fs');
+                
                 $('div.git_info').slideUp();
 
-                chrome.fileSystem.getDisplayPath(fileEntry, function (path) {
-                    console.log('Loading file from: ' + path);
+                console.log('Loading file from: ' + filename);
 
-                    fileEntry.file(function (file) {
-                        var reader = new FileReader();
+                fs.readFile(filename, (err, data) => {
 
-                        reader.onprogress = function (e) {
-                            if (e.total > 104857600) { // 100 MB
-                                // dont allow reading files bigger then 100 MB
-                                console.log('File limit (100 MB) exceeded, aborting');
-                                reader.abort();
-                            }
-                        };
+                    if (err) {
+                        console.log("Error loading local file", err);
+                        return;
+                    }
 
-                        reader.onloadend = function(e) {
-                            if (e.total != 0 && e.total == e.loaded) {
-                                console.log('File loaded');
+                    console.log('File loaded');
 
-                                intel_hex = e.target.result;
+                    parse_hex(data.toString(), function (data) {
+                        parsed_hex = data;
 
-                                parse_hex(intel_hex, function (data) {
-                                    parsed_hex = data;
+                        if (parsed_hex) {
+                            googleAnalytics.sendEvent('Flashing', 'Firmware', 'local');
+                            $('a.flash_firmware').removeClass('disabled');
 
-                                    if (parsed_hex) {
-                                        googleAnalytics.sendEvent('Flashing', 'Firmware', 'local');
-                                        $('a.flash_firmware').removeClass('disabled');
-
-                                        $('span.progressLabel').text('Loaded Local Firmware: (' + parsed_hex.bytes_total + ' bytes)');
-                                    } else {
-                                        $('span.progressLabel').text(chrome.i18n.getMessage('firmwareFlasherHexCorrupted'));
-                                    }
-                                });
-                            }
-                        };
-
-                        reader.readAsText(file);
+                            $('span.progressLabel').text('Loaded Local Firmware: (' + parsed_hex.bytes_total + ' bytes)');
+                        } else {
+                            $('span.progressLabel').text(chrome.i18n.getMessage('firmwareFlasherHexCorrupted'));
+                        }
                     });
                 });
+
             });
+
         });
 
         /**
@@ -36223,21 +36381,58 @@ TABS.logging.cleanup = function (callback) {
 
 'use strict';
 
+////////////////////////////////////
+//
+// global Parameters definition
+//
+////////////////////////////////////
+
+
 // MultiWii NAV Protocol
 var MWNP = MWNP || {};
 
 // WayPoint type
 MWNP.WPTYPE = {
-    WAYPOINT:     1,
-    PH_UNLIM:     2,
-    PH_TIME:      3,
-    RTH:          4,
-    SET_POI:      5,
-    JUMP:         6,
-    SET_HEAD:     7,
-    LAND:         8
+    WAYPOINT:           1,
+    POSHOLD_UNLIM:      2,
+    POSHOLD_TIME:       3,
+    RTH:                4,
+    SET_POI:            5,
+    JUMP:               6,
+    SET_HEAD:           7,
+    LAND:               8
 };
 
+// Reverse WayPoint type dictionary
+function swap(dict) {
+    let rev_dict = {};
+    for (let key in dict) {
+        rev_dict[dict[key]] = key;
+    }
+    return rev_dict;
+}
+
+MWNP.WPTYPE.REV = swap(MWNP.WPTYPE);
+
+// Dictionary of Parameter1,2,3 definition depending on type of action selected (refer to MWNP.WPTYPE)
+var dictOfLabelParameterPoint = {
+    1:    {parameter1: 'Speed (cm/s)', parameter2: '', parameter3: 'Sea level Ref'},
+    2:    {parameter1: '', parameter2: '', parameter3: ''},
+    3:    {parameter1: 'Wait time (s)', parameter2: 'Speed (cm/s)', parameter3: 'Sea level Ref'},
+    4:    {parameter1: 'Force land (non zero)', parameter2: '', parameter3: ''},
+    5:    {parameter1: '', parameter2: '', parameter3: ''},
+    6:    {parameter1: 'Target WP number', parameter2: 'Number of repeat (-1: infinite)', parameter3: ''},
+    7:    {parameter1: 'Heading (deg)', parameter2: '', parameter3: ''},
+    8:    {parameter1: '', parameter2: '', parameter3: 'Sea level Ref'}
+};
+
+var waypointOptions = ['JUMP','SET_HEAD','RTH'];
+
+////////////////////////////////////
+//
+// Tab mission control block
+//
+////////////////////////////////////
 
 TABS.mission_control = {};
 TABS.mission_control.isYmapLoad = false;
@@ -36266,7 +36461,9 @@ TABS.mission_control.initialize = function (callback) {
     if (CONFIGURATOR.connectionValid) {
         var loadChainer = new MSPChainerClass();
         loadChainer.setChain([
-            mspHelper.getMissionInfo
+            mspHelper.getMissionInfo,
+            //mspHelper.loadWaypoints,
+            //mspHelper.loadSafehomes
         ]);
         loadChainer.setExitPoint(loadHtml);
         loadChainer.execute();
@@ -36274,13 +36471,6 @@ TABS.mission_control.initialize = function (callback) {
 
         // FC not connected, load page anyway
         loadHtml();
-    }
-
-    function updateTotalInfo() {
-        if (CONFIGURATOR.connectionValid) {
-            $('#availablePoints').text(MISSION_PLANER.countBusyPoints + '/' + MISSION_PLANER.maxWaypoints);
-            $('#missionValid').html(MISSION_PLANER.isValidMission ? chrome.i18n.getMessage('armingCheckPass') : chrome.i18n.getMessage('armingCheckFail'));
-        }
     }
 
     function loadHtml() {
@@ -36299,6 +36489,11 @@ TABS.mission_control.initialize = function (callback) {
             $('#saveEepromMissionButton').hide();
             isOffline = true;
         }
+        
+        $safehomesTable = $('.safehomesTable');
+        $safehomesTableBody = $('#safehomesTableBody');
+        $waypointOptionsTable = $('.waypointOptionsTable');
+        $waypointOptionsTableBody = $('#waypointOptionsTableBody');
 
         if (typeof require !== "undefined") {
             loadSettings();
@@ -36319,7 +36514,7 @@ TABS.mission_control.initialize = function (callback) {
         }
 
         function get_altitude_data() {
-             MSP.send_message(MSPCodes.MSP_ALTITUDE, false, false, get_attitude_data);
+            MSP.send_message(MSPCodes.MSP_ALTITUDE, false, false, get_attitude_data);
 
         }
 
@@ -36522,28 +36717,92 @@ TABS.mission_control.initialize = function (callback) {
         GUI.content_ready(callback);
     }
 
-    var markers = [];
-    var lines = [];
+    ///////////////////////////////////////////////
+    //
+    // define & init parameters 
+    //
+    ///////////////////////////////////////////////
+    
+    //////////////////////////////////////////////////////////////////////////////////////////////
+    //      define & init parameters for Map Layer
+    //////////////////////////////////////////////////////////////////////////////////////////////
+    var markers = [];           // Layer for Waypoints
+    var lines = [];             // Layer for lines between waypoints
+    var safehomeMarkers =[];    // layer for Safehome points
+    
     var map;
+    
+    //////////////////////////////////////////////////////////////////////////////////////////////
+    //      define & init parameters for Selected Marker
+    //////////////////////////////////////////////////////////////////////////////////////////////
     var selectedMarker = null;
-    var pointForSend = 0;
-    var settings = { speed: 0, alt: 5000 };
+    var selectedFeature = null;
+    var tempMarker = null;
+    
+    //////////////////////////////////////////////////////////////////////////////////////////////
+    //      define & init parameters for default Settings
+    //////////////////////////////////////////////////////////////////////////////////////////////   
+    var vMaxDistSH = 0;
+    var settings = {};
+    if (CONFIGURATOR.connectionValid) {
+        mspHelper.getSetting("safehome_max_distance").then(function (s) {
+            if (s) {
+                vMaxDistSH = Number(s.value)/100;
+                settings = { speed: 0, alt: 5000, safeRadiusSH : 50, maxDistSH : vMaxDistSH};
+            }
+            else {
+                vMaxDistSH = 0;
+                settings = { speed: 0, alt: 5000, safeRadiusSH : 50, maxDistSH : vMaxDistSH};
+            }
+        });
+    }
+    else {
+        vMaxDistSH = 0;
+        settings = { speed: 0, alt: 5000, safeRadiusSH : 50, maxDistSH : vMaxDistSH};
+    }
+    //////////////////////////////////////////////////////////////////////////////////////////////
+    //      define & init Waypoints parameters
+    //////////////////////////////////////////////////////////////////////////////////////////////    
+    var mission = new WaypointCollection();
 
+    //////////////////////////////////////////////////////////////////////////////////////////////
+    //      define & init Safehome parameters
+    //////////////////////////////////////////////////////////////////////////////////////////////    
+    //var SAFEHOMES = new SafehomeCollection(); // TO COMMENT FOR RELEASE : DECOMMENT FOR DEBUG
+    //SAFEHOMES.inflate(); // TO COMMENT FOR RELEASE : DECOMMENT FOR DEBUG
+    //var safehomeRangeRadius = 200; //meters
+    //var safehomeSafeRadius = 50; //meters
+    
+    /////////////////////////////////////////////
+    //
+    // Reinit Jquery Form
+    //
+    /////////////////////////////////////////////
     function clearEditForm() {
         $('#pointLat').val('');
         $('#pointLon').val('');
         $('#pointAlt').val('');
-        $('#pointSpeed').val('');
-        $('[name=pointNumber]').val('');
+        $('#pointP1').val('');
+        $('#pointP2').val('');
+        $('#pointP3').val('');
+        $('#missionDistance').text(0);
         $('#MPeditPoint').fadeOut(300);
     }
-
+    
+    function clearFilename() {
+        $('#missionFilename').text('');
+    }
+    
+    /////////////////////////////////////////////
+    //
+    // Manage Settings
+    //
+    /////////////////////////////////////////////
     function loadSettings() {
         chrome.storage.local.get('missionPlanerSettings', function (result) {
             if (result.missionPlanerSettings) {
                 settings = result.missionPlanerSettings;
             }
-
             refreshSettings();
         });
     }
@@ -36553,36 +36812,331 @@ TABS.mission_control.initialize = function (callback) {
     }
 
     function refreshSettings() {
-        $('#MPdefaultPointAlt').val(settings.alt);
-        $('#MPdefaultPointSpeed').val(settings.speed);
+        $('#MPdefaultPointAlt').val(String(settings.alt));
+        $('#MPdefaultPointSpeed').val(String(settings.speed));
+        $('#MPdefaultSafeRangeSH').val(String(settings.safeRadiusSH));
+    }
+    
+    function closeSettingsPanel() {
+        $('#missionPlanerSettings').hide();
+    }    
+    
+    /////////////////////////////////////////////
+    //
+    // Manage Safehome
+    //
+    /////////////////////////////////////////////  
+    function closeSafehomePanel() {
+        $('#missionPlanerSafehome').hide();
+        cleanSafehomeLayers();
+    } 
+    
+    function renderSafehomesTable() {
+        /*
+         * Process safehome table UI
+         */
+        let safehomes = SAFEHOMES.get();
+        $safehomesTableBody.find("*").remove();
+        for (let safehomeIndex in safehomes) {
+            if (safehomes.hasOwnProperty(safehomeIndex)) {
+                const safehome = safehomes[safehomeIndex];
+
+                $safehomesTableBody.append('\
+                    <tr>\
+                    <td><div id="viewSafomePoint" class="btnTable btnTableIcon"> \
+                            <a class="ic_center" data-role="safehome-center" href="#"  title="move to center view"></a> \
+                        </div>\
+                    </td> \
+                    <td><span class="safehome-number"/></td>\
+                    <td class="safehome-enabled"><input type="checkbox" class="togglesmall safehome-enabled-value"/></td> \
+                    <td><input type="number" class="safehome-lon" /></td>\
+                    <td><input type="number" class="safehome-lat" /></td>\
+                    </tr>\
+                ');
+
+                const $row = $safehomesTableBody.find('tr:last');
+                
+                
+                $row.find(".safehome-number").text(safehome.getNumber()+1);
+                
+                $row.find(".safehome-enabled-value").prop('checked',safehome.isUsed()).change(function () {
+                    safehome.setEnabled((($(this).prop('checked')) ? 1 : 0));
+                    SAFEHOMES.updateSafehome(safehome);
+                    cleanSafehomeLayers();
+                    renderSafehomesOnMap();
+                });
+
+                $row.find(".safehome-lon").val(safehome.getLonMap()).change(function () {
+                    safehome.setLon(Math.round(Number($(this).val()) * 10000000));
+                    SAFEHOMES.updateSafehome(safehome);
+                    cleanSafehomeLayers();
+                    renderSafehomesOnMap();
+                });
+                
+                $row.find(".safehome-lat").val(safehome.getLatMap()).change(function () {
+                    safehome.setLat(Math.round(Number($(this).val()) * 10000000));
+                    SAFEHOMES.updateSafehome(safehome);
+                    cleanSafehomeLayers();
+                    renderSafehomesOnMap();
+                });
+
+                $row.find("[data-role='safehome-center']").attr("data-index", safehomeIndex);
+            }
+        }
+        GUI.switchery();
+        localize();
+    }
+    
+    
+    function renderSafehomesOnMap() {
+        /*
+         * Process safehome on Map
+         */
+        SAFEHOMES.get().forEach(function (safehome) {
+            map.addLayer(addSafeHomeMarker(safehome));
+        });
+    }
+    
+    function cleanSafehomeLayers() {       
+        for (var i in safehomeMarkers) {
+            map.removeLayer(safehomeMarkers[i]);
+        }
+        safehomeMarkers = [];
+    }
+    
+    function getSafehomeIcon(safehome) {
+        /*
+         * Process Safehome Icon
+         */
+        return new ol.style.Style({
+            image: new ol.style.Icon(({
+                anchor: [0.5, 1],
+                opacity: 1,
+                scale: 0.5,
+                src: '../images/icons/cf_icon_safehome' + (safehome.isUsed() ? '_used' : '')+ '.png'
+            })),
+            text: new ol.style.Text(({
+                text: String(Number(safehome.getNumber())+1),
+                font: '12px sans-serif',
+                offsetY: -15,
+                offsetX: -2,
+                fill: new ol.style.Fill({
+                    color: '#FFFFFF'
+                }),
+                stroke: new ol.style.Stroke({
+                    color: '#FFFFFF'
+                }),
+            }))
+        });
+    }
+    
+    function addSafeHomeMarker(safehome) {
+        /*
+         * add safehome on Map
+         */
+        let coord = ol.proj.fromLonLat([safehome.getLonMap(), safehome.getLatMap()]);
+        var iconFeature = new ol.Feature({
+            geometry: new ol.geom.Point(coord),
+            name: 'safehome'
+        });
+
+        //iconFeature.setStyle(getSafehomeIcon(safehome, safehome.isUsed()));
+        
+        let circleStyle = new ol.style.Style({
+            stroke: new ol.style.Stroke({
+                color: 'rgba(144, 12, 63, 0.5)',
+                width: 3,
+                lineDash : [10]
+            }),
+            // fill: new ol.style.Fill({
+                // color: 'rgba(251, 225, 155, 0.1)'
+            // })
+        });
+        
+        let circleSafeStyle = new ol.style.Style({
+            stroke: new ol.style.Stroke({
+                color: 'rgba(136, 204, 62, 1)',
+                width: 3,
+                lineDash : [10]
+            }),
+            /* fill: new ol.style.Fill({
+                color: 'rgba(136, 204, 62, 0.1)'
+            }) */
+        });
+        
+        var vectorLayer = new ol.layer.Vector({
+            source: new ol.source.Vector({
+                        features: [iconFeature]
+                    }),
+            style : function(iconFeature) {
+                let styles = [getSafehomeIcon(safehome)];
+                if (safehome.isUsed()) {
+                    circleStyle.setGeometry(new ol.geom.Circle(iconFeature.getGeometry().getCoordinates(), getProjectedRadius(settings.maxDistSH)));
+                    circleSafeStyle.setGeometry(new ol.geom.Circle(iconFeature.getGeometry().getCoordinates(), getProjectedRadius(Number(settings.safeRadiusSH))));
+                    styles.push(circleSafeStyle);
+                    styles.push(circleStyle);
+                }
+                return styles;
+            }
+        });
+
+        vectorLayer.kind = "safehome";
+        vectorLayer.number = safehome.getNumber();
+        vectorLayer.selection = false;
+        
+        safehomeMarkers.push(vectorLayer);
+        
+        return vectorLayer;
     }
 
-    function repaint() {
-        var oldPos;
-        for (var i in lines) {
-            map.removeLayer(lines[i]);
-        }
-        lines = [];
+    function getProjectedRadius(radius) {
+        let projection = map.getView().getProjection();
+        let resolutionAtEquator = map.getView().getResolution();
+        let resolutionRate = resolutionAtEquator / ol.proj.getPointResolution(projection, resolutionAtEquator, map.getView().getCenter());
+        let radiusProjected = (radius / ol.proj.METERS_PER_UNIT.m) * resolutionRate;
+        return radiusProjected;
+    }
+    /////////////////////////////////////////////
+    //
+    // Manage Waypoint
+    //
+    /////////////////////////////////////////////
+    
+    function removeAllWaypoints() {
+        mission.reinit(); 
+        cleanLayers();
+        clearEditForm();
+        updateTotalInfo();
+        clearFilename();
+    }
+    
+    function addWaypointMarker(waypoint, isEdit=false) {
+
+        let coord = ol.proj.fromLonLat([waypoint.getLonMap(), waypoint.getLatMap()]);
+        var iconFeature = new ol.Feature({
+            geometry: new ol.geom.Point(coord),
+            name: 'Null Island',
+            population: 4000,
+            rainfall: 500
+        });
+        iconFeature.setStyle(getWaypointIcon(waypoint, isEdit));
+        var vectorSource = new ol.source.Vector({
+            features: [iconFeature]
+        });
+
+        var vectorLayer = new ol.layer.Vector({
+            source: vectorSource
+        });
+        
+        vectorLayer.kind = "waypoint";
+        vectorLayer.number = waypoint.getNumber();
+        vectorLayer.layerNumber = waypoint.getLayerNumber();
+
+        markers.push(vectorLayer);
+
+        return vectorLayer;
+    }
+
+    function getWaypointIcon(waypoint, isEdit) {
+        var dictofPointIcon = {
+            1:    'WP',
+            2:    'PH',
+            3:    'PH',
+            5:    'POI',
+            8:    'LDG'
+        };
+        
+        return new ol.style.Style({
+            image: new ol.style.Icon(({
+                anchor: [0.5, 1],
+                opacity: 1,
+                scale: 0.5,
+                src: '../images/icons/cf_icon_position' + (dictofPointIcon[waypoint.getAction()] != '' ? '_'+dictofPointIcon[waypoint.getAction()] : '') + (isEdit ? '_edit' : '')+ '.png'
+            })),
+            text: new ol.style.Text(({
+                text: String(Number(waypoint.getLayerNumber()+1)),
+                font: '12px sans-serif',
+                offsetY: -15,
+                offsetX: -2,
+                fill: new ol.style.Fill({
+                    color: '#FFFFFF'
+                }),
+                stroke: new ol.style.Stroke({
+                    color: '#FFFFFF'
+                }),
+            }))
+        });
+    }
+    
+    
+    function repaintLine4Waypoints(mission) {
+        let oldPos,
+            oldAction,
+            poiList = [],
+            oldHeading;
+        let activatePoi = false;
+        let activateHead = false;
         $('#missionDistance').text(0);
-
-        map.getLayers().forEach(function (t) {
-            //feature.getGeometry().getType()
-            if (t instanceof ol.layer.Vector && typeof t.alt !== 'undefined') {
-                var geometry = t.getSource().getFeatures()[0].getGeometry();
-                if (typeof oldPos !== 'undefined') {
-                    paintLine(oldPos, geometry.getCoordinates());
+        cleanLines();
+        mission.get().forEach(function (element) {
+            if (!element.isAttached()) {
+                let coord = ol.proj.fromLonLat([element.getLonMap(), element.getLatMap()]);                
+                if (element.getAction() == 5) {
+                    // If action is Set_POI, increment counter of POI
+                    poiList.push(element.getNumber());
+                    activatePoi = true;
+                    activateHead = false;
                 }
-
-                oldPos = geometry.getCoordinates();
+                else {
+                    // If classic WPs, draw standard line in-between 
+                    if (typeof oldPos !== 'undefined' && activatePoi != true && activateHead != true){
+                        paintLine(oldPos, coord, element.getNumber());
+                    }
+                    // If one is POI, draw orange line in-between and modulate dashline each time a new POI is defined
+                    else if (typeof oldPos !== 'undefined' && activatePoi == true && activateHead != true) {
+                        if ((poiList.length % 2) == 0) {
+                            paintLine(oldPos, coord, element.getNumber(), color='#ffb725', lineDash=5);
+                        }
+                        else {
+                            paintLine(oldPos, coord, element.getNumber(), color='#ffb725');
+                        }
+                    }
+                    // If one is SET_HEAD, draw labelled line in-between with heading value
+                    else if (typeof oldPos !== 'undefined' && activatePoi != true && activateHead == true) {
+                        paintLine(oldPos, coord, element.getNumber(), color='#1497f1', lineDash=0, lineText=String(oldHeading)+"°");
+                    }
+                    oldPos = coord;
+                }
+            }
+            else if (element.isAttached()) {
+                if (element.getAction() == MWNP.WPTYPE.JUMP) {
+                    let coord = ol.proj.fromLonLat([mission.getWaypoint(element.getP1()).getLonMap(), mission.getWaypoint(element.getP1()).getLatMap()]);  
+                    paintLine(oldPos, coord, element.getNumber(), color='#e935d6', lineDash=5, lineText="Repeat x"+(element.getP2() == -1 ? " infinite" : String(element.getP2())), selection=false);
+                }
+                // If classic WPs is defined with a heading = -1, change Boolean for POI to false. If it is defined with a value different from -1, activate Heading boolean
+                else if (element.getAction() == MWNP.WPTYPE.SET_HEAD) {
+                    if (element.getP1() == -1) {
+                        activatePoi = false;
+                        activateHead = false;
+                        oldHeading = 'undefined'
+                    }
+                    else if (typeof element.getP1() != 'undefined' && element.getP1() != -1) {
+                        activatePoi = false;
+                        activateHead = true;
+                        oldHeading = String(element.getP1());
+                    }
+                }
             }
         });
         //reset text position
         if (textGeom) {
             textGeom.setCoordinates(map.getCoordinateFromPixel([0,0]));
         }
+        let lengthMission = mission.getDistance();
+        $('#missionDistance').text(lengthMission[lengthMission.length -1] != -1 ? lengthMission[lengthMission.length -1].toFixed(1) : 'infinite');
     }
-
-    function paintLine(pos1, pos2) {
+    
+    function paintLine(pos1, pos2, pos2ID, color='#1497f1', lineDash=0, lineText="", selection=true) {
         var line = new ol.geom.LineString([pos1, pos2]);
 
         var feature = new ol.Feature({
@@ -36590,9 +37144,19 @@ TABS.mission_control.initialize = function (callback) {
         });
         feature.setStyle(new ol.style.Style({
             stroke: new ol.style.Stroke({
-                color: '#1497f1',
-                width: 3
-            })
+                color: color,
+                width: 3,
+                lineDash: [lineDash]
+            }),
+            text: new ol.style.Text({
+                text: lineText,
+                font: '14px sans-serif',
+                placement : 'line',
+                textBaseline: 'ideographic',
+                stroke: new ol.style.Stroke({
+                    color: color
+                }),
+            }),
         }));
 
         var vectorSource = new ol.source.Vector({
@@ -36603,65 +37167,176 @@ TABS.mission_control.initialize = function (callback) {
             source: vectorSource
         });
 
+
+        vectorLayer.kind = "line";
+        vectorLayer.selection = selection;
+        vectorLayer.number = pos2ID;
+        
         lines.push(vectorLayer);
 
-        var length = ol.Sphere.getLength(line) + parseFloat($('#missionDistance').text());
-        $('#missionDistance').text(length.toFixed(3));
+/*         var length = ol.Sphere.getLength(line) + parseFloat($('#missionDistance').text());
+        $('#missionDistance').text(length.toFixed(3)); */
 
         map.addLayer(vectorLayer);
     }
-
-    function getPointIcon(isEdit) {
-        return new ol.style.Style({
-            image: new ol.style.Icon(({
-                anchor: [0.5, 1],
-                opacity: 1,
-                scale: 0.5,
-                src: '../images/icons/cf_icon_position' + (isEdit ? '_edit' : '') + '.png'
-            }))
-            /*
-            text: new ol.style.Text({
-                text: '10',
-                offsetX: -1,
-                offsetY: -30,
-                overflow: true,
-                scale: 2,
-                fill: new ol.style.Fill({ color: 'black' })
-            })
-            */
-        });
+    
+    function cleanLayers() {       
+        for (var i in lines) {
+            map.removeLayer(lines[i]);
+        }
+        lines = [];
+        
+        for (var i in markers) {
+            map.removeLayer(markers[i]);
+        }
+        markers = [];
     }
-
-    function addMarker(_pos, _alt, _action, _speed) {
-        var iconFeature = new ol.Feature({
-            geometry: new ol.geom.Point(_pos),
-            name: 'Null Island',
-            population: 4000,
-            rainfall: 500
-        });
-
-        iconFeature.setStyle(getPointIcon());
-
-        var vectorSource = new ol.source.Vector({
-            features: [iconFeature]
-        });
-
-        var vectorLayer = new ol.layer.Vector({
-            source: vectorSource
-        });
-
-        vectorLayer.alt = _alt;
-        vectorLayer.number = markers.length;
-        vectorLayer.action = _action;
-        vectorLayer.speedValue = _speed;
-
-        markers.push(vectorLayer);
-
-        return vectorLayer;
+    
+    function cleanLines() {       
+        for (var i in lines) {
+            map.removeLayer(lines[i]);
+        }
+        lines = [];
     }
+        
+    function redrawLayers() {
+        if (!mission.isEmpty()) {
+            mission.get().forEach(function (element) {
+                if (!element.isAttached()) {
+                    map.addLayer(addWaypointMarker(element));
+                }
+            });
+        }
+        repaintLine4Waypoints(mission);
+    }
+    
+    function redrawLayer() {
+        if (selectedFeature && selectedMarker) {
+            selectedFeature.setStyle(getWaypointIcon(selectedMarker, true));
+        }
+        repaintLine4Waypoints(mission);
+    }
+    
+    
+    function renderWaypointOptionsTable(waypoint) {
+        /*
+         * Process Waypoint Options table UI
+         */
+        $waypointOptionsTableBody.empty();
+        mission.getAttachedFromWaypoint(waypoint).forEach(function (element) {
+            $waypointOptionsTableBody.append('\
+                <tr>\
+                <td><div id="deleteOptionsPoint" class="btnTable btnTableIcon btnTable-danger"> \
+                        <a class="ic_cancel" data-role="waypointOptions-delete" href="#" style="float: center" title="Delete"></a> \
+                    </div>\
+                </td> \
+                <td><span class="waypointOptions-number"/></td>\
+                <td><select class="waypointOptions-action"></select></td> \
+                <td><input type="number" class="waypointOptions-p1"/></td>\
+                <td><input type="number" class="waypointOptions-p2" /></td>\
+                </tr>\
+            ');
 
+            const $row = $waypointOptionsTableBody.find('tr:last');
+            
+            for (var i = 1; i <= 3; i++) {
+                if (dictOfLabelParameterPoint[element.getAction()]['parameter'+String(i)] != '') {
+                    $row.find(".waypointOptions-p"+String(i)).prop("disabled", false);
+                }
+                else {
+                    $row.find(".waypointOptions-p"+String(i)).prop("disabled", true);
+                }
+            }
+            
+            GUI.fillSelect($row.find(".waypointOptions-action"), waypointOptions, waypointOptions.indexOf(MWNP.WPTYPE.REV[element.getAction()]));
+            
+            $row.find(".waypointOptions-action").val(waypointOptions.indexOf(MWNP.WPTYPE.REV[element.getAction()])).change(function () {
+                    element.setAction(MWNP.WPTYPE[waypointOptions[$(this).val()]]);
+                    for (var i = 1; i <= 3; i++) {
+                        if (dictOfLabelParameterPoint[element.getAction()]['parameter'+String(i)] != '') {
+                            $row.find(".waypointOptions-p"+String(i)).prop("disabled", false);
+                        }
+                        else {
+                            $row.find(".waypointOptions-p"+String(i)).prop("disabled", true);
+                        }
+                    }
+                    mission.updateWaypoint(element);
+                    cleanLines();
+                    redrawLayer();
+                });
+            
+            $row.find(".waypointOptions-number").text(element.getAttachedNumber()+1);
+
+
+            $row.find(".waypointOptions-p1").val((MWNP.WPTYPE.REV[element.getAction()] == "JUMP" ? element.getP1()+1 : element.getP1())).change(function () {
+                if (MWNP.WPTYPE.REV[element.getAction()] == "SET_HEAD") {
+                    if ($(this).val() >= 360 || ($(this).val() < 0 && $(this).val() != -1))
+                    {
+                      $(this).val(-1);
+                      alert(chrome.i18n.getMessage('MissionPlannerHeadSettingsCheck'));
+                    }
+                }
+                else if (MWNP.WPTYPE.REV[element.getAction()] == "RTH") {
+                    if ($(this).val() != 0 && $(this).val() != 1)
+                    {
+                      $(this).val(0);
+                      alert(chrome.i18n.getMessage('MissionPlannerRTHSettingsCheck'));
+                    }
+                }
+                else if (MWNP.WPTYPE.REV[element.getAction()] == "JUMP") {
+                    if ($(this).val() > mission.getNonAttachedList().length || $(this).val() < 1)
+                    {
+                      $(this).val(1);
+                      alert(chrome.i18n.getMessage('MissionPlannerJumpSettingsCheck'));
+                    }
+                    else if (mission.getPoiList().length != 0 && mission.getPoiList()) {
+                        console.log("mission.getPoiList() ",mission.getPoiList());
+                        console.log(mission.convertJumpNumberToWaypoint(Number($(this).val())-1));
+                        if (mission.getPoiList().includes(mission.convertJumpNumberToWaypoint(Number($(this).val())-1))) {
+                            $(this).val(1);
+                            alert(chrome.i18n.getMessage('MissionPlannerJump3SettingsCheck'));
+                        }
+                    }
+                }
+                element.setP1((MWNP.WPTYPE.REV[element.getAction()] == "JUMP" ? mission.convertJumpNumberToWaypoint(Number($(this).val())-1) : Number($(this).val())));
+                mission.updateWaypoint(element);
+                cleanLines();
+                redrawLayer();
+            });
+            
+            $row.find(".waypointOptions-p2").val(element.getP2()).change(function () {
+                if (MWNP.WPTYPE.REV[element.getAction()] == "JUMP") {
+                    if ($(this).val() > 10 || ($(this).val() < 0 && $(this).val() != -1))
+                    {
+                      $(this).val(0);
+                      alert(chrome.i18n.getMessage('MissionPlannerJump2SettingsCheck'));
+                    }
+                }
+                element.setP2(Number($(this).val()));
+                mission.updateWaypoint(element);
+                cleanLines();
+                redrawLayer();
+            });
+
+            $row.find("[data-role='waypointOptions-delete']").attr("data-index", element.getAttachedNumber()+1);
+            
+        });
+        GUI.switchery();
+        localize();
+        return waypoint;
+    }
+    
+    /////////////////////////////////////////////
+    //
+    // Manage Map construction
+    //
+    /////////////////////////////////////////////
     function initMap() {
         var app = {};
+        
+        //////////////////////////////////////////////////////////////////////////////////////////////
+        //      Drag behavior definition
+        //////////////////////////////////////////////////////////////////////////////////////////////  
 
         /**
          * @constructor
@@ -36720,7 +37395,6 @@ TABS.mission_control.initialize = function (callback) {
             button.style = 'background: url(\'../images/CF_settings_white.svg\') no-repeat 1px -1px;background-color: rgba(0,60,136,.5);';
 
             var handleShowSettings = function () {
-                $('#MPeditPoint, #missionPalnerTotalInfo').hide();
                 $('#missionPlanerSettings').fadeIn(300);
             };
 
@@ -36739,7 +37413,47 @@ TABS.mission_control.initialize = function (callback) {
 
         };
         ol.inherits(app.PlannerSettingsControl, ol.control.Control);
+        
+        
+        /**
+         * @constructor
+         * @extends {ol.control.Control}
+         * @param {Object=} opt_options Control options.
+         */
+        app.PlannerSafehomeControl = function (opt_options) {
+            var options = opt_options || {};
+            var button = document.createElement('button');
 
+            button.innerHTML = ' ';
+            button.style = 'background: url(\'../images/icons/cf_icon_safehome_white.svg\') no-repeat 1px -1px;background-color: rgba(0,60,136,.5);';
+
+            var handleShowSafehome = function () {
+                $('#missionPlanerSafehome').fadeIn(300);
+                //SAFEHOMES.flush();
+                //mspHelper.loadSafehomes();
+                cleanSafehomeLayers();
+                renderSafehomesTable();
+                renderSafehomesOnMap();
+                $('#safeHomeMaxDistance').text(settings.maxDistSH);
+                $('#SafeHomeSafeDistance').text(settings.safeRadiusSH);
+            };
+
+            button.addEventListener('click', handleShowSafehome, false);
+            button.addEventListener('touchstart', handleShowSafehome, false);
+
+            var element = document.createElement('div');
+            element.className = 'mission-control-safehome ol-unselectable ol-control';
+            element.appendChild(button);
+            element.title = 'MP Safehome';
+
+            ol.control.Control.call(this, {
+                element: element,
+                target: options.target
+            });
+
+        };
+        ol.inherits(app.PlannerSafehomeControl, ol.control.Control);
+        
         /**
          * @param {ol.MapBrowserEvent} evt Map browser event.
          * @return {boolean} `true` to start the drag sequence.
@@ -36751,10 +37465,15 @@ TABS.mission_control.initialize = function (callback) {
                 function (feature, layer) {
                     return feature;
                 });
+            tempMarker = map.forEachFeatureAtPixel(evt.pixel,
+                function (feature, layer) {
+                    return layer;
+                });
 
             if (feature) {
                 this.coordinate_ = evt.coordinate;
                 this.feature_ = feature;
+                this.layer_ = tempMarker;
             }
 
             return !!feature;
@@ -36776,11 +37495,31 @@ TABS.mission_control.initialize = function (callback) {
 
             var geometry = /** @type {ol.geom.SimpleGeometry} */
                 (this.feature_.getGeometry());
-            geometry.translate(deltaX, deltaY);
+            if (tempMarker.kind == "waypoint" ||tempMarker.kind == "safehome") {
+                geometry.translate(deltaX, deltaY);
+                this.coordinate_[0] = evt.coordinate[0];
+                this.coordinate_[1] = evt.coordinate[1]; 
+            }
 
-            this.coordinate_[0] = evt.coordinate[0];
-            this.coordinate_[1] = evt.coordinate[1];
-            repaint();
+            let coord = ol.proj.toLonLat(geometry.getCoordinates());
+            if (tempMarker.kind == "waypoint") {
+                let tempWp = mission.getWaypoint(tempMarker.number);
+                tempWp.setLon(Math.round(coord[0] * 10000000));
+                tempWp.setLat(Math.round(coord[1] * 10000000));
+                $('#pointLon').val(Math.round(coord[0] * 10000000) / 10000000);
+                $('#pointLat').val(Math.round(coord[1] * 10000000) / 10000000);
+                mission.updateWaypoint(tempWp);
+                repaintLine4Waypoints(mission);
+            }
+            else if (tempMarker.kind == "safehome") {                
+                let tempSH = SAFEHOMES.getSafehome(tempMarker.number);
+                tempSH.setLon(Math.round(coord[0] * 10000000));
+                tempSH.setLat(Math.round(coord[1] * 10000000));
+                SAFEHOMES.updateSafehome(tempSH);
+                $safehomesTableBody.find('tr:nth-child('+String(tempMarker.number+1)+') > td > .safehome-lon').val(Math.round(coord[0] * 10000000) / 10000000);
+                $safehomesTableBody.find('tr:nth-child('+String(tempMarker.number+1)+') > td > .safehome-lat').val(Math.round(coord[1] * 10000000) / 10000000);
+            }
+            
         };
 
         /**
@@ -36794,7 +37533,7 @@ TABS.mission_control.initialize = function (callback) {
                         return feature;
                     });
                 var element = evt.map.getTargetElement();
-                if (feature) {
+                if (feature && feature.name != "circleFeature" && feature.name != "circleSafeFeature") {
                     if (element.style.cursor != this.cursor_) {
                         this.previousCursor_ = element.style.cursor;
                         element.style.cursor = this.cursor_;
@@ -36828,22 +37567,36 @@ TABS.mission_control.initialize = function (callback) {
                 maxZoom: 19
             });
         } else if ( globalSettings.mapProviderType == 'mapproxy' ) {
-        	mapLayer = new ol.source.TileWMS({
-        		url: globalSettings.proxyURL,
+            mapLayer = new ol.source.TileWMS({
+                url: globalSettings.proxyURL,
                 params: {'LAYERS':globalSettings.proxyLayer}
-             })
+            })
         } else {
             mapLayer = new ol.source.OSM();
         }
+        
+        if (CONFIGURATOR.connectionValid) {
+            control_list = [
+                new app.PlannerSettingsControl(),
+                new app.PlannerSafehomeControl()
+            ]
+        }
+        else {
+            control_list = [
+                new app.PlannerSettingsControl(),
+                //new app.PlannerSafehomeControl() // TO COMMENT FOR RELEASE : DECOMMENT FOR DEBUG
+            ]
+        }
 
+        //////////////////////////////////////////////////////////////////////////////////////////////
+        // Map object definition
+        //////////////////////////////////////////////////////////////////////////////////////////////          
         map = new ol.Map({
             controls: ol.control.defaults({
                 attributionOptions: {
                     collapsible: false
                 }
-            }).extend([
-                new app.PlannerSettingsControl()
-            ]),
+            }).extend(control_list),
             interactions: ol.interaction.defaults().extend([new app.Drag()]),
             layers: [
                 new ol.layer.Tile({
@@ -36857,78 +37610,117 @@ TABS.mission_control.initialize = function (callback) {
             })
         });
 
+        //////////////////////////////////////////////////////////////////////////
         // Set the attribute link to open on an external browser window, so
         // it doesn't interfere with the configurator.
+        //////////////////////////////////////////////////////////////////////////
         setTimeout(function() {
             $('.ol-attribution a').attr('target', '_blank');
         }, 100);
-
+        //////////////////////////////////////////////////////////////////////////
         // save map view settings when user moves it
+        //////////////////////////////////////////////////////////////////////////
         map.on('moveend', function (evt) {
             chrome.storage.local.set({'missionPlanerLastValues': {
                 center: ol.proj.toLonLat(map.getView().getCenter()),
                 zoom: map.getView().getZoom()
             }});
         });
-
+        //////////////////////////////////////////////////////////////////////////
         // load map view settings on startup
+        //////////////////////////////////////////////////////////////////////////
         chrome.storage.local.get('missionPlanerLastValues', function (result) {
             if (result.missionPlanerLastValues && result.missionPlanerLastValues.center) {
                 map.getView().setCenter(ol.proj.fromLonLat(result.missionPlanerLastValues.center));
                 map.getView().setZoom(result.missionPlanerLastValues.zoom);
             }
         });
-
+        //////////////////////////////////////////////////////////////////////////
+        // Map on-click behavior definition 
+        //////////////////////////////////////////////////////////////////////////
         map.on('click', function (evt) {
-            if (selectedMarker != null) {
+            if (selectedMarker != null && selectedFeature != null) {
                 try {
-                    selectedMarker.getSource().getFeatures()[0].setStyle(getPointIcon());
+                    selectedFeature.setStyle(getWaypointIcon(selectedMarker, false));
                     selectedMarker = null;
+                    selectedFeature = null;
+                    tempMarker = null;
                     clearEditForm();
                 } catch (e) {
-                    GUI.log(e);
+                    console.log(e);
+                    GUI.log("Previous selection was not a WAYPOINT!");
                 }
             }
-
-            var selectedFeature = map.forEachFeatureAtPixel(evt.pixel,
+            selectedFeature = map.forEachFeatureAtPixel(evt.pixel,
                 function (feature, layer) {
                     return feature;
                 });
-            var tempMarker = map.forEachFeatureAtPixel(evt.pixel,
+            tempMarker = map.forEachFeatureAtPixel(evt.pixel,
                 function (feature, layer) {
                     return layer;
                 });
-            if (selectedFeature)
-            {
-                for (var i in markers)
-                {
-                    if (markers[i] == tempMarker)
-                    {
-                      selectedMarker = tempMarker;
+            if (selectedFeature && tempMarker.kind == "waypoint") {
+                selectedMarker = mission.getWaypoint(tempMarker.number);
+                var geometry = selectedFeature.getGeometry();
+                var coord = ol.proj.toLonLat(geometry.getCoordinates());
 
-                      var geometry = selectedFeature.getGeometry();
-                      var coord = ol.proj.toLonLat(geometry.getCoordinates());
+                selectedFeature.setStyle(getWaypointIcon(selectedMarker, true));
 
-                      selectedFeature.setStyle(getPointIcon(true));
+                var altitudeMeters = app.ConvertCentimetersToMeters(selectedMarker.getAlt());
 
-                      var altitudeMeters = app.ConvertCentimetersToMeters(selectedMarker.alt);
-                      
-                      $('#altitudeInMeters').text(` ${altitudeMeters}m`);
-                      $('#pointLon').val(Math.round(coord[0] * 10000000) / 10000000);
-                      $('#pointLat').val(Math.round(coord[1] * 10000000) / 10000000);
-                      $('#pointAlt').val(selectedMarker.alt);
-                      $('#pointType').val(selectedMarker.action);
-                      $('#pointSpeed').val(selectedMarker.speedValue);
-                      $('#MPeditPoint').fadeIn(300);
+                $('#altitudeInMeters').text(` ${altitudeMeters}m`);
+                $('#pointLon').val(Math.round(coord[0] * 10000000) / 10000000);
+                $('#pointLat').val(Math.round(coord[1] * 10000000) / 10000000);
+                $('#pointAlt').val(selectedMarker.getAlt());
+                $('#pointType').val(selectedMarker.getAction());
+                // Change SpeedValue to Parameter1, 2, 3
+                $('#pointP1').val(selectedMarker.getP1());
+                $('#pointP2').val(selectedMarker.getP2());
+                changeSwitchery($('#pointP3'), selectedMarker.getP3() == 1);
+               
+                
+                // Selection box update depending on choice of type of waypoint
+                for (var j in dictOfLabelParameterPoint[selectedMarker.getAction()]) {
+                    if (dictOfLabelParameterPoint[selectedMarker.getAction()][j] != '') {
+                        $('#pointP'+String(j).slice(-1)+'class').fadeIn(300);
+                        $('label[for=pointP'+String(j).slice(-1)+']').html(dictOfLabelParameterPoint[selectedMarker.getAction()][j]);
                     }
+                    else {$('#pointP'+String(j).slice(-1)+'class').fadeOut(300);}
                 }
-            } else {
-                map.addLayer(addMarker(evt.coordinate, settings.alt, MWNP.WPTYPE.WAYPOINT, settings.speed));
-                repaint();
+                selectedMarker = renderWaypointOptionsTable(selectedMarker);
+                $('#MPeditPoint').fadeIn(300);
+                redrawLayer();
             }
+            else if (selectedFeature && tempMarker.kind == "line" && tempMarker.selection) {
+                let tempWpCoord = ol.proj.toLonLat(evt.coordinate);
+                let tempWp = new Waypoint(tempMarker.number, MWNP.WPTYPE.WAYPOINT, Math.round(tempWpCoord[1] * 10000000), Math.round(tempWpCoord[0] * 10000000), alt=Number(settings.alt), p1=Number(settings.speed));
+                mission.insertWaypoint(tempWp, tempMarker.number);
+                mission.update();
+                cleanLayers();
+                redrawLayers();
+            }
+            else if (selectedFeature && tempMarker.kind == "safehome" && tempMarker.selection) {
+                selectedMarker = SAFEHOMES.getSafehome(tempMarker.number);
+                var geometry = selectedFeature.getGeometry();
+                var coord = ol.proj.toLonLat(geometry.getCoordinates());
+                $safehomesTableBody.find('tr:nth-child('+String(tempMarker.number+1)+') > td > .safehome-enabled-value').val(selectedMarker.isUsed());
+                $safehomesTableBody.find('tr:nth-child('+String(tempMarker.number+1)+') > td > .safehome-lon').val(Math.round(coord[0] * 10000000) / 10000000);
+                $safehomesTableBody.find('tr:nth-child('+String(tempMarker.number+1)+') > td > .safehome-lat').val(Math.round(coord[1] * 10000000) / 10000000);
+            }
+            else {
+                let tempWpCoord = ol.proj.toLonLat(evt.coordinate);
+                let tempWp = new Waypoint(mission.get().length, MWNP.WPTYPE.WAYPOINT, Math.round(tempWpCoord[1] * 10000000), Math.round(tempWpCoord[0] * 10000000), alt=Number(settings.alt), p1=Number(settings.speed));
+                mission.put(tempWp);
+                mission.update();
+                cleanLayers();
+                redrawLayers();
+            }
+            //mission.missionDisplayDebug();
         });
 
+        //////////////////////////////////////////////////////////////////////////
         // change mouse cursor when over marker
+        //////////////////////////////////////////////////////////////////////////
         $(map.getViewport()).on('mousemove', function (e) {
             var pixel = map.getEventPixel(e.originalEvent);
             var hit = map.forEachFeatureAtPixel(pixel, function (feature, layer) {
@@ -36941,64 +37733,278 @@ TABS.mission_control.initialize = function (callback) {
             }
         });
 
+        //////////////////////////////////////////////////////////////////////////
         // handle map size on container resize
+        //////////////////////////////////////////////////////////////////////////
         setInterval(function () {
             let width = $("#missionMap canvas").width(), height = $("#missionMap canvas").height();
             if ((map.width_ != width) || (map.height_ != height)) map.updateSize();
             map.width_ = width; map.height_ = height;
         }, 200);
 
+        //////////////////////////////////////////////////////////////////////////
+        // Update Alt display in meters on ALT field keypress up
+        //////////////////////////////////////////////////////////////////////////
         $('#pointAlt').keyup(function(){
             let altitudeMeters = app.ConvertCentimetersToMeters($(this).val());
             $('#altitudeInMeters').text(` ${altitudeMeters}m`);
         });
-
+        
+        /////////////////////////////////////////////
+        // Callback to show/hide menu boxes
+        /////////////////////////////////////////////
+        $('#showHideActionButton').on('click', function () {
+            var src = ($(this).children().attr('class') === 'ic_hide')
+                ? 'ic_show'
+                : 'ic_hide';
+            $(this).children().attr('class', src);
+            if ($(this).children().attr('class') === 'ic_hide') {
+                $('#ActionContent').fadeIn(300);
+            }
+            else {
+                $('#ActionContent').fadeOut(300);
+            }
+        });
+        
+        $('#showHideInfoButton').on('click', function () {
+            var src = ($(this).children().attr('class') === 'ic_hide')
+                ? 'ic_show'
+                : 'ic_hide';
+            $(this).children().attr('class', src);
+            if ($(this).children().attr('class') === 'ic_hide') {
+                $('#InfoContent').fadeIn(300);
+            }
+            else {
+                $('#InfoContent').fadeOut(300);
+            }
+        });
+        
+        $('#showHideSafehomeButton').on('click', function () {
+            var src = ($(this).children().attr('class') === 'ic_hide')
+                ? 'ic_show'
+                : 'ic_hide';
+            $(this).children().attr('class', src);
+            if ($(this).children().attr('class') === 'ic_hide') {
+                $('#SafehomeContent').fadeIn(300);
+            }
+            else {
+                $('#SafehomeContent').fadeOut(300);
+            }
+        });
+        
+        $('#showHideWPeditButton').on('click', function () {
+            var src = ($(this).children().attr('class') === 'ic_hide')
+                ? 'ic_show'
+                : 'ic_hide';
+            $(this).children().attr('class', src);
+            if ($(this).children().attr('class') === 'ic_hide') {
+                $('#WPeditContent').fadeIn(300);
+            }
+            else {
+                $('#WPeditContent').fadeOut(300);
+            }
+        });
+        
+        /////////////////////////////////////////////
+        // Callback for Waypoint edition
+        /////////////////////////////////////////////
+        $('#pointType').change(function () {
+            if (selectedMarker) {
+                selectedMarker.setAction(Number($('#pointType').val()));
+                if ([MWNP.WPTYPE.SET_POI,MWNP.WPTYPE.POSHOLD_TIME,MWNP.WPTYPE.LAND].includes(selectedMarker.getAction())) {
+                    selectedMarker.setP1(0.0);
+                    selectedMarker.setP2(0.0);
+                    selectedMarker.setP3(0.0);
+                }
+                for (var j in dictOfLabelParameterPoint[selectedMarker.getAction()]) {
+                    if (dictOfLabelParameterPoint[selectedMarker.getAction()][j] != '') {
+                        $('#pointP'+String(j).slice(-1)+'class').fadeIn(300);
+                        $('label[for=pointP'+String(j).slice(-1)+']').html(dictOfLabelParameterPoint[selectedMarker.getAction()][j]);
+                    }
+                    else {$('#pointP'+String(j).slice(-1)+'class').fadeOut(300);}
+                }
+                mission.updateWaypoint(selectedMarker);
+                mission.update();
+                redrawLayer();
+            }
+        });
+        
+        $('#pointLat').on('change', function (event) {
+            if (selectedMarker) {
+                selectedMarker.setLat(Math.round(Number($('#pointLat').val()) * 10000000));
+                mission.updateWaypoint(selectedMarker);
+                mission.update();
+                cleanLayers();
+                redrawLayers();
+                selectedFeature = markers[selectedMarker.getLayerNumber()].getSource().getFeatures()[0];
+                selectedFeature.setStyle(getWaypointIcon(selectedMarker, true));
+            }
+        });
+        
+        $('#pointLon').on('change', function (event) {
+            if (selectedMarker) {
+                selectedMarker.setLon(Math.round(Number($('#pointLon').val()) * 10000000));
+                mission.updateWaypoint(selectedMarker);
+                mission.update();
+                cleanLayers();
+                redrawLayers();
+                selectedFeature = markers[selectedMarker.getLayerNumber()].getSource().getFeatures()[0];
+                selectedFeature.setStyle(getWaypointIcon(selectedMarker, true));
+            }
+        });
+        
+        $('#pointAlt').on('change', function (event) {
+            if (selectedMarker) {
+                selectedMarker.setAlt(Number($('#pointAlt').val()));
+                mission.updateWaypoint(selectedMarker);
+                mission.update();
+                redrawLayer();
+            }
+        });
+        
+        $('#pointP1').on('change', function (event) {
+            if (selectedMarker) {
+                selectedMarker.setP1(Number($('#pointP1').val()));
+                mission.updateWaypoint(selectedMarker);
+                mission.update();
+                redrawLayer();
+            }
+        });
+        
+        $('#pointP2').on('change', function (event) {
+            if (selectedMarker) {
+                selectedMarker.setP2(Number($('#pointP2').val()));
+                mission.updateWaypoint(selectedMarker);
+                mission.update();
+                redrawLayer();
+            }
+        });
+        
+        $('#pointP3').on('change', function (event) {
+            if (selectedMarker) {
+                selectedMarker.setP3( $('#pointP3').prop("checked") ? 1.0 : 0.0);
+                mission.updateWaypoint(selectedMarker);
+                mission.update();
+                redrawLayer();
+            }
+        });
+        
+        /////////////////////////////////////////////
+        // Callback for Waypoint Options Table
+        /////////////////////////////////////////////
+        $waypointOptionsTableBody.on('click', "[data-role='waypointOptions-delete']", function (event) {
+            if (selectedMarker) {
+                mission.dropAttachedFromWaypoint(selectedMarker, $(event.currentTarget).attr("data-index")-1);
+                renderWaypointOptionsTable(selectedMarker);
+                //cleanLines();
+                cleanLayers();
+                redrawLayers();
+                selectedFeature = markers[selectedMarker.getLayerNumber()].getSource().getFeatures()[0];
+                selectedFeature.setStyle(getWaypointIcon(selectedMarker, true));
+            }
+        });
+        
+        $("[data-role='waypointOptions-add']").click(function () {
+            if (selectedMarker) {
+                mission.addAttachedFromWaypoint(selectedMarker);
+                renderWaypointOptionsTable(selectedMarker);
+                //cleanLines();
+                cleanLayers();
+                redrawLayers();
+                selectedFeature = markers[selectedMarker.getLayerNumber()].getSource().getFeatures()[0];
+                selectedFeature.setStyle(getWaypointIcon(selectedMarker, true));
+            }
+        });
+        
+        /////////////////////////////////////////////
+        // Callback for SAFEHOMES Table
+        /////////////////////////////////////////////
+        $safehomesTableBody.on('click', "[data-role='safehome-center']", function (event) {
+            let mapCenter = map.getView().getCenter();
+            let tmpSH = SAFEHOMES.getSafehome($(event.currentTarget).attr("data-index"));
+            tmpSH.setLon(Math.round(ol.proj.toLonLat(mapCenter)[0] * 1e7));
+            tmpSH.setLat(Math.round(ol.proj.toLonLat(mapCenter)[1] * 1e7));
+            SAFEHOMES.updateSafehome(tmpSH);
+            renderSafehomesTable();
+            cleanSafehomeLayers();
+            renderSafehomesOnMap();     
+        });
+       
+        $('#cancelSafehome').on('click', function () {
+            closeSafehomePanel();
+        });
+        
+        $('#loadEepromSafehomeButton').on('click', function () {
+            $(this).addClass('disabled');
+            GUI.log('Start of getting Safehome points');
+            mspHelper.loadSafehomes();
+            setTimeout(function(){
+                renderSafehomesTable();
+                cleanSafehomeLayers();
+                renderSafehomesOnMap();
+                GUI.log('End of getting Safehome points');
+                $('#loadEepromSafehomeButton').removeClass('disabled');
+            }, 500);
+            
+        });
+        
+        $('#saveEepromSafehomeButton').on('click', function () {
+            $(this).addClass('disabled');
+            GUI.log('Start of sending Safehome points');
+            mspHelper.saveSafehomes();
+            setTimeout(function(){
+                mspHelper.saveToEeprom();
+                GUI.log('End of sending Safehome points');
+                $('#saveEepromSafehomeButton').removeClass('disabled');
+            }, 500);
+        });
+        
+        /////////////////////////////////////////////
+        // Callback for Remove buttons
+        /////////////////////////////////////////////
         $('#removeAllPoints').on('click', function () {
             if (markers.length && confirm(chrome.i18n.getMessage('confirm_delete_all_points'))) {
-                removeAllPoints();
+                removeAllWaypoints();
             }
         });
 
         $('#removePoint').on('click', function () {
             if (selectedMarker) {
-
-                var tmp = [];
-                for (var i in markers) {
-                    if (markers[i] !== selectedMarker && typeof markers[i].action !== "undefined") {
-                        tmp.push(markers[i]);
+                if (mission.isJumpTargetAttached(selectedMarker)) {
+                    alert(chrome.i18n.getMessage('MissionPlannerJumpTargetRemoval'));
+                }
+                else if (mission.getAttachedFromWaypoint(selectedMarker) && mission.getAttachedFromWaypoint(selectedMarker).length != 0) {
+                    if (confirm(chrome.i18n.getMessage('confirm_delete_point_with_options'))) {
+                        mission.getAttachedFromWaypoint(selectedMarker).forEach(function (element) {
+                            mission.dropWaypoint(element);
+                            mission.update();
+                        });
+                        mission.dropWaypoint(selectedMarker);
+                        selectedMarker = null;
+                        mission.update();
+                        clearEditForm();
+                        cleanLayers();
+                        redrawLayers();
                     }
                 }
-                map.removeLayer(selectedMarker);
-                markers = tmp;
-                selectedMarker = null;
-
-                clearEditForm();
-                repaint();
+                else {
+                    mission.dropWaypoint(selectedMarker);
+                    selectedMarker = null;
+                    mission.update();
+                    clearEditForm();
+                    cleanLayers();
+                    redrawLayers();
+                }
             }
         });
-
-        $('#savePoint').on('click', function () {
-            if (selectedMarker) {
-                map.getLayers().forEach(function (t) {
-                    if (t === selectedMarker) {
-                        var geometry = t.getSource().getFeatures()[0].getGeometry();
-                        geometry.setCoordinates(ol.proj.fromLonLat([parseFloat($('#pointLon').val()), parseFloat($('#pointLat').val())]));
-                        t.alt = $('#pointAlt').val();
-                        t.action = $('#pointType').val();
-                        t.speedValue = $('#pointSpeed').val();
-                    }
-                });
-
-                selectedMarker.getSource().getFeatures()[0].setStyle(getPointIcon());
-                selectedMarker = null;
-                clearEditForm();
-                repaint();
-            }
-        });
-
+        
+        
+        /////////////////////////////////////////////
+        // Callback for Save/load buttons
+        /////////////////////////////////////////////       
         $('#loadFileMissionButton').on('click', function () {
             if (markers.length && !confirm(chrome.i18n.getMessage('confirm_delete_all_points'))) return;
-            removeAllPoints();
+            removeAllWaypoints();
             nwdialog.setContext(document);
             nwdialog.openFileDialog(function(result) {
                 loadMissionFile(result);
@@ -37006,7 +38012,6 @@ TABS.mission_control.initialize = function (callback) {
         });
 
         $('#saveFileMissionButton').on('click', function () {
-            //if (!markers.length) return;
             nwdialog.setContext(document);
             nwdialog.saveFileDialog('', '.mission', function(result) {
                 saveMissionFile(result);
@@ -37015,45 +38020,54 @@ TABS.mission_control.initialize = function (callback) {
 
         $('#loadMissionButton').on('click', function () {
             if (markers.length && !confirm(chrome.i18n.getMessage('confirm_delete_all_points'))) return;
-            removeAllPoints();
+            removeAllWaypoints();
             $(this).addClass('disabled');
             GUI.log('Start get point');
-
-            pointForSend = 0;
-            getNextPoint();
+            getWaypointsFromFC();
+            GUI.log('End get point');
+            $('#loadMissionButton').removeClass('disabled');
         });
 
         $('#saveMissionButton').on('click', function () {
             $(this).addClass('disabled');
             GUI.log('Start send point');
-
-            pointForSend = 0;
-            sendNextPoint();
+            sendWaypointsToFC();
+            GUI.log('End send point');
+            $('#saveMissionButton').removeClass('disabled');
+            
         });
 
         $('#loadEepromMissionButton').on('click', function () {
             if (markers.length && !confirm(chrome.i18n.getMessage('confirm_delete_all_points'))) return;
-            removeAllPoints();
+            removeAllWaypoints();
             GUI.log(chrome.i18n.getMessage('eeprom_load_ok'));
-
-            MSP.send_message(MSPCodes.MSP_WP_MISSION_LOAD, [0], getPointsFromEprom);
+            MSP.send_message(MSPCodes.MSP_WP_MISSION_LOAD, [0], getWaypointsFromFC);
         });
+        
         $('#saveEepromMissionButton').on('click', function () {
+            $(this).addClass('disabled');
+            GUI.log('Start send point');
+            sendWaypointsToFC();
+            GUI.log('End send point');
+            $('#saveEepromMissionButton').removeClass('disabled');
             GUI.log(chrome.i18n.getMessage('eeprom_saved_ok'));
-            MSP.send_message(MSPCodes.MSP_WP_MISSION_SAVE, [0], false);
+            setTimeout(function(){
+                MSP.send_message(MSPCodes.MSP_WP_MISSION_SAVE, [0], false);
+            },2000);
         });
 
-        $('#rthEndMission').on('change', function () {
-            if ($(this).is(':checked')) {
-                $('#rthSettings').fadeIn(300);
-            } else {
-                $('#rthSettings').fadeOut(300);
-            }
-        });
-
+        /////////////////////////////////////////////
+        // Callback for settings
+        /////////////////////////////////////////////
         $('#saveSettings').on('click', function () {
-            settings = { speed: $('#MPdefaultPointSpeed').val(), alt: $('#MPdefaultPointAlt').val() };
+            let oldSafeRadiusSH = settings.safeRadiusSH;
+            settings = { speed: Number($('#MPdefaultPointSpeed').val()), alt: Number($('#MPdefaultPointAlt').val()), safeRadiusSH: Number($('#MPdefaultSafeRangeSH').val()), maxDistSH : vMaxDistSH};
             saveSettings();
+            if (settings.safeRadiusSH != oldSafeRadiusSH  && $('#showHideSafehomeButton').is(":visible")) {
+                cleanSafehomeLayers();
+                renderSafehomesOnMap(); 
+                $('#SafeHomeSafeDistance').text(settings.safeRadiusSH);
+            }
             closeSettingsPanel();
         });
 
@@ -37061,31 +38075,19 @@ TABS.mission_control.initialize = function (callback) {
             loadSettings();
             closeSettingsPanel();
         });
+        
+
 
         updateTotalInfo();
     }
 
-    function closeSettingsPanel() {
-        $('#missionPlanerSettings').hide();
-        $('#missionPalnerTotalInfo').fadeIn(300);
-        if (selectedMarker !== null) {
-            $('#MPeditPoint').fadeIn(300);
-        }
-    }
 
-    function removeAllPoints() {
-        for (var i in markers) {
-            map.removeLayer(markers[i]);
-        }
-        markers = [];
-        clearEditForm();
-        updateTotalInfo();
-        $('#rthEndMission').prop('checked', false);
-        $('#rthSettings').fadeOut(300);
-        $('#rthLanding').prop('checked', false);
-        repaint();
-    }
 
+    /////////////////////////////////////////////
+    //
+    // Load/Save MWP File Toolbox
+    //
+    /////////////////////////////////////////////
     function loadMissionFile(filename) {
         const fs = require('fs');
         if (!window.xml2js) return GUI.log('<span style="color: red">Error reading file (xml2js not found)</span>');
@@ -37103,7 +38105,7 @@ TABS.mission_control.initialize = function (callback) {
                 }
 
                 // parse mission file
-                var mission = { points: [] };
+                removeAllWaypoints();
                 var node = null;
                 var nodemission = null;
                 for (var noderoot in result) {
@@ -37115,97 +38117,89 @@ TABS.mission_control.initialize = function (callback) {
                                 if (node['#name'].match(/version/i) && node.$) {
                                     for (var attr in node.$) {
                                         if (attr.match(/value/i)) {
-                                            mission.version = node.$[attr]
+                                            mission.setVersion(node.$[attr]);
                                         }
                                     }
                                 } else if (node['#name'].match(/mwp/i) && node.$) {
-                                    mission.center = {};
                                     for (var attr in node.$) {
                                         if (attr.match(/zoom/i)) {
-                                            mission.center.zoom = parseInt(node.$[attr]);
+                                            mission.setCenterZoom(parseInt(node.$[attr]));
                                         } else if (attr.match(/cx/i)) {
-                                            mission.center.lon = parseFloat(node.$[attr]);
+                                            mission.setCenterLon(parseFloat(node.$[attr]) * 10000000);
                                         } else if (attr.match(/cy/i)) {
-                                            mission.center.lat = parseFloat(node.$[attr]);
+                                            mission.setCenterLat(parseFloat(node.$[attr]) * 10000000);
                                         }
                                     }
                                 } else if (node['#name'].match(/missionitem/i) && node.$) {
-                                    var point = {};
+                                    //var point = {};
+                                    var point = new Waypoint(0,0,0,0);
                                     for (var attr in node.$) {
                                         if (attr.match(/no/i)) {
-                                            point.index = parseInt(node.$[attr]);
+                                            point.setNumber(parseInt(node.$[attr]));
                                         } else if (attr.match(/action/i)) {
                                             if (node.$[attr].match(/WAYPOINT/i)) {
-                                                point.action = MWNP.WPTYPE.WAYPOINT;
+                                                point.setAction(MWNP.WPTYPE.WAYPOINT);
                                             } else if (node.$[attr].match(/PH_UNLIM/i) || node.$[attr].match(/POSHOLD_UNLIM/i)) {
-                                                point.action = MWNP.WPTYPE.PH_UNLIM;
+                                                point.setAction(MWNP.WPTYPE.POSHOLD_UNLIM);
                                             } else if (node.$[attr].match(/PH_TIME/i) || node.$[attr].match(/POSHOLD_TIME/i)) {
-                                                point.action = MWNP.WPTYPE.PH_TIME;
+                                                point.setAction(MWNP.WPTYPE.POSHOLD_TIME);
                                             } else if (node.$[attr].match(/RTH/i)) {
-                                                point.action = MWNP.WPTYPE.RTH;
+                                                point.setAction(MWNP.WPTYPE.RTH);
                                             } else if (node.$[attr].match(/SET_POI/i)) {
-                                                point.action = MWNP.WPTYPE.SET_POI;
+                                                point.setAction(MWNP.WPTYPE.SET_POI);
                                             } else if (node.$[attr].match(/JUMP/i)) {
-                                                point.action = MWNP.WPTYPE.JUMP;
+                                                point.setAction(MWNP.WPTYPE.JUMP);
                                             } else if (node.$[attr].match(/SET_HEAD/i)) {
-                                                point.action = MWNP.WPTYPE.SET_HEAD;
+                                                point.setAction(MWNP.WPTYPE.SET_HEAD);
                                             } else if (node.$[attr].match(/LAND/i)) {
-                                                point.action = MWNP.WPTYPE.LAND;
+                                                point.setAction(MWNP.WPTYPE.LAND);
                                             } else {
-                                                point.action = 0;
+                                                point.setAction(0);
                                             }
                                         } else if (attr.match(/lat/i)) {
-                                            point.lat = parseFloat(node.$[attr]);
+                                            point.setLat(Math.round(parseFloat(node.$[attr]) * 10000000));
                                         } else if (attr.match(/lon/i)) {
-                                            point.lon = parseFloat(node.$[attr]);
+                                            point.setLon(Math.round(parseFloat(node.$[attr]) * 10000000));
                                         } else if (attr.match(/alt/i)) {
-                                            point.alt = (parseInt(node.$[attr]) * 100);
+                                            point.setAlt((parseInt(node.$[attr]) * 100));
                                         } else if (attr.match(/parameter1/i)) {
-                                            point.p1 = parseInt(node.$[attr]);
+                                            point.setP1(parseInt(node.$[attr]));
                                         } else if (attr.match(/parameter2/i)) {
-                                            point.p2 = parseInt(node.$[attr]);
+                                            point.setP2(parseInt(node.$[attr]));
                                         } else if (attr.match(/parameter3/i)) {
-                                            point.p3 = parseInt(node.$[attr]);
+                                            point.setP3(parseInt(node.$[attr]));
                                         }
                                     }
-                                    mission.points.push(point);
+                                    mission.put(point);
                                 }
                             }
                         }
                     }
                 }
-
-                // draw actual mission
-                removeAllPoints();
-                for (var i = 0; i < mission.points.length; i++) {
-                    //if ([MWNP.WPTYPE.WAYPOINT,MWNP.WPTYPE.PH_UNLIM,MWNP.WPTYPE.PH_TIME,MWNP.WPTYPE.LAND].includes(mission.points[i].action)) {
-                    if (mission.points[i].action == MWNP.WPTYPE.WAYPOINT) {
-                        var coord = ol.proj.fromLonLat([mission.points[i].lon, mission.points[i].lat]);
-                        map.addLayer(addMarker(coord, mission.points[i].alt, mission.points[i].action, mission.points[i].p1));
-                        if (i == 0) {
-                            map.getView().setCenter(coord);
-                            map.getView().setZoom(16);
-                        }
-                    } else if (mission.points[i].action == MWNP.WPTYPE.RTH) {
-                        $('#rthEndMission').prop('checked', true);
-                        $('#rthSettings').fadeIn(300);
-                        if (mission.points[i].p1 > 0) {
-                            $('#rthLanding').prop('checked', true);
-                        }
+                // update Attached Waypoints (i.e non Map Markers)
+                mission.update(true);
+                if (Object.keys(mission.getCenter()).length !== 0) {
+                    var coord = ol.proj.fromLonLat([mission.getCenter().lon / 10000000 , mission.getCenter().lat / 10000000]);
+                    map.getView().setCenter(coord);
+                    if (mission.getCenter().zoom) {
+                        map.getView().setZoom(mission.getCenter().zoom);
+                    }
+                    else {
+                        map.getView().setZoom(16);
                     }
                 }
-
-                if (mission.center) {
-                    var coord = ol.proj.fromLonLat([mission.center.lon, mission.center.lat]);
+                else {
+                    var coord = ol.proj.fromLonLat([mission.getWaypoint(0).getLonMap(), mission.getWaypoint(0).getLatMap()]);
                     map.getView().setCenter(coord);
-                    if (mission.center.zoom) map.getView().setZoom(mission.center.zoom);
+                    map.getView().setZoom(16);
                 }
-
-                repaint();
+                
+                redrawLayers();
                 updateTotalInfo();
-
+                let sFilename = String(filename.split('\\').pop().split('/').pop());
+                GUI.log(sFilename+' has been loaded successfully !');
+                updateFilename(sFilename);
             });
-
         });
     }
 
@@ -37221,26 +38215,21 @@ TABS.mission_control.initialize = function (callback) {
             'mwp': { $: { 'cx': (Math.round(center[0] * 10000000) / 10000000), 'cy': (Math.round(center[1] * 10000000) / 10000000), 'zoom': zoom } },
             'missionitem': []
         };
-
-        for (var i = 0; i < markers.length; i++) {
-            var geometry = markers[i].getSource().getFeatures()[0].getGeometry();
-            var coordinate = ol.proj.toLonLat(geometry.getCoordinates());
+        
+        mission.get().forEach(function (waypoint) {
             var point = { $: {
-                'no': (i + 1),
-                'action': ((markers[i].action == MWNP.WPTYPE.WAYPOINT) ? 'WAYPOINT' : markers[i].action),
-                'lon': (Math.round(coordinate[0] * 10000000) / 10000000),
-                'lat': (Math.round(coordinate[1] * 10000000) / 10000000),
-                'alt': (markers[i].alt / 100)
-            } };
-            if ((markers[i].action == MWNP.WPTYPE.WAYPOINT) && (markers[i].speedValue > 0)) point.$['parameter1'] = markers[i].speedValue;
+                        'no': waypoint.getNumber()+1,
+                        'action': MWNP.WPTYPE.REV[waypoint.getAction()],
+                        'lat': waypoint.getLatMap(),
+                        'lon': waypoint.getLonMap(),
+                        'alt': (waypoint.getAlt() / 100),
+                        'parameter1': (MWNP.WPTYPE.REV[waypoint.getAction()] == "JUMP" ? waypoint.getP1()+1 : waypoint.getP1()),
+                        'parameter2': waypoint.getP2(),
+                        'parameter3': waypoint.getP3(),
+                    } };
             data.missionitem.push(point);
-        }
-
-        // add last RTH point
-        if ($('#rthEndMission').is(':checked')) {
-            data.missionitem.push({ $: { 'no': (markers.length + 1), 'action': 'RTH', 'lon': 0, 'lat': 0, 'alt': (settings.alt / 100), 'parameter1': ($('#rthLanding').is(':checked') ? 1 : 0) } });
-        }
-
+        });
+        
         var builder = new window.xml2js.Builder({ 'rootName': 'mission', 'renderOpts': { 'pretty': true, 'indent': '\t', 'newline': '\n' } });
         var xml = builder.buildObject(data);
         fs.writeFile(filename, xml, (err) => {
@@ -37248,107 +38237,70 @@ TABS.mission_control.initialize = function (callback) {
                 GUI.log('<span style="color: red">Error writing file</span>');
                 return console.error(err);
             }
-            GUI.log('File saved');
+            let sFilename = String(filename.split('\\').pop().split('/').pop());
+            GUI.log(sFilename+' has been saved successfully !');
+            updateFilename(sFilename);
         });
     }
 
-    function getPointsFromEprom() {
-        pointForSend = 0;
-        MSP.send_message(MSPCodes.MSP_WP_GETINFO, false, false, getNextPoint);
+    /////////////////////////////////////////////
+    //
+    // Load/Save FC mission Toolbox
+    //
+    /////////////////////////////////////////////
+    function getWaypointsFromFC() {
+        mspHelper.loadWaypoints();
+        setTimeout(function(){
+            mission.reinit();
+            mission.copy(MISSION_PLANER);
+            mission.update(true);
+            var coord = ol.proj.fromLonLat([mission.getWaypoint(0).getLonMap(), mission.getWaypoint(0).getLatMap()]);
+            map.getView().setCenter(coord);
+            map.getView().setZoom(16);
+            redrawLayers();
+            updateTotalInfo();
+        }, 2000);
+    }
+    
+    function sendWaypointsToFC() {
+        MISSION_PLANER.reinit();
+        MISSION_PLANER.copy(mission);
+        MISSION_PLANER.update(true, true);
+        mspHelper.saveWaypoints();
+        setTimeout(function(){
+            mission.setMaxWaypoints(MISSION_PLANER.getMaxWaypoints());
+            mission.setValidMission(MISSION_PLANER.getValidMission());
+            mission.setCountBusyPoints(MISSION_PLANER.getCountBusyPoints());
+            updateTotalInfo();
+            mission.reinit();
+            mission.copy(MISSION_PLANER);
+            mission.update(true);
+            cleanLayers();
+            redrawLayers();
+            $('#MPeditPoint').fadeOut(300);
+        }, 2000);
     }
 
-    function endGetPoint() {
-        GUI.log('End get point');
-        $('#loadMissionButton').removeClass('disabled');
-        repaint();
-        updateTotalInfo();
+
+    
+    function updateTotalInfo() {
+        if (CONFIGURATOR.connectionValid) {
+            $('#availablePoints').text(mission.getCountBusyPoints() + '/' + mission.getMaxWaypoints());
+            $('#missionValid').html(mission.getValidMission() ? chrome.i18n.getMessage('armingCheckPass') : chrome.i18n.getMessage('armingCheckFail'));
+        }
+    }   
+    
+
+    function updateFilename(filename) {
+        $('#missionFilename').text(filename);
+        $('#infoMissionFilename').show();
     }
-
-    function getNextPoint() {
-        if (MISSION_PLANER.countBusyPoints == 0) {
-            endGetPoint();
-            return;
-        }
-
-        if (pointForSend > 0) {
-            // console.log(MISSION_PLANER.bufferPoint.lon);
-            // console.log(MISSION_PLANER.bufferPoint.lat);
-            // console.log(MISSION_PLANER.bufferPoint.alt);
-            // console.log(MISSION_PLANER.bufferPoint.action);
-            if (MISSION_PLANER.bufferPoint.action == 4) {
-                $('#rthEndMission').prop('checked', true);
-                $('#rthSettings').fadeIn(300);
-                if (MISSION_PLANER.bufferPoint.p1 > 0) {
-                    $('#rthLanding').prop('checked', true);
-                }
-            } else {
-                var coord = ol.proj.fromLonLat([MISSION_PLANER.bufferPoint.lon, MISSION_PLANER.bufferPoint.lat]);
-                map.addLayer(addMarker(coord, MISSION_PLANER.bufferPoint.alt, MISSION_PLANER.bufferPoint.action, MISSION_PLANER.bufferPoint.p1));
-                if (pointForSend === 1) {
-                    map.getView().setCenter(coord);
-                }
-            }
-        }
-
-        if (pointForSend >= MISSION_PLANER.countBusyPoints) {
-            endGetPoint();
-            return;
-        }
-
-        MISSION_PLANER.bufferPoint.number = pointForSend;
-
-        pointForSend++;
-
-        MSP.send_message(MSPCodes.MSP_WP, mspHelper.crunch(MSPCodes.MSP_WP), false, getNextPoint);
+    
+    function changeSwitchery(element, checked) {
+      if ( ( element.is(':checked') && checked == false ) || ( !element.is(':checked') && checked == true ) ) {
+        element.parent().find('.switcherymid').trigger('click');
+      }
     }
-
-    function sendNextPoint() {
-        var isRTH = $('#rthEndMission').is(':checked');
-
-        if (pointForSend >= markers.length) {
-            if (isRTH) {
-                MISSION_PLANER.bufferPoint.number = pointForSend + 1;
-                MISSION_PLANER.bufferPoint.action = 4;
-                MISSION_PLANER.bufferPoint.lon = 0;
-                MISSION_PLANER.bufferPoint.lat = 0;
-                MISSION_PLANER.bufferPoint.alt = 0;
-                MISSION_PLANER.bufferPoint.endMission = 0xA5;
-                MISSION_PLANER.bufferPoint.p1 = $('#rthLanding').is(':checked') ? 1 : 0;
-                MSP.send_message(MSPCodes.MSP_SET_WP, mspHelper.crunch(MSPCodes.MSP_SET_WP), false, endSendPoint);
-            } else {
-                endSendPoint();
-            }
-
-            return;
-        }
-
-        var geometry = markers[pointForSend].getSource().getFeatures()[0].getGeometry();
-        var coordinate = ol.proj.toLonLat(geometry.getCoordinates());
-
-        MISSION_PLANER.bufferPoint.number = pointForSend + 1;
-        MISSION_PLANER.bufferPoint.action = markers[pointForSend].action;
-        MISSION_PLANER.bufferPoint.lon = parseInt(coordinate[0] * 10000000);
-        MISSION_PLANER.bufferPoint.lat = parseInt(coordinate[1] * 10000000);
-        MISSION_PLANER.bufferPoint.alt = markers[pointForSend].alt;
-        MISSION_PLANER.bufferPoint.p1 = markers[pointForSend].speedValue;
-        pointForSend++;
-        if (pointForSend >= markers.length && !isRTH) {
-            MISSION_PLANER.bufferPoint.endMission = 0xA5;
-        } else {
-            MISSION_PLANER.bufferPoint.endMission = 0;
-        }
-
-        MSP.send_message(MSPCodes.MSP_SET_WP, mspHelper.crunch(MSPCodes.MSP_SET_WP), false, sendNextPoint);
-    }
-
-    function endSendPoint() {
-        GUI.log('End send point');
-
-        MSP.send_message(MSPCodes.MSP_WP_GETINFO, false, false, updateTotalInfo);
-
-        $('#saveMissionButton').removeClass('disabled');
-    }
-
 
 };
 
@@ -38017,7 +38969,7 @@ TABS.modes.cleanup = function (callback) {
     if (callback) callback();
 };
 
-/*global MSP,MSPCodes,BF_CONFIG,TABS,GUI,CONFIGURATOR,helper,mspHelper*/
+/*global $,MSP,MSPCodes,BF_CONFIG,TABS,GUI,CONFIGURATOR,helper,mspHelper,nwdialog,SDCARD,chrome*/
 'use strict';
 
 var
@@ -38323,39 +39275,34 @@ TABS.onboard_logging.initialize = function (callback) {
         if (GUI.connected_to) {
             // Begin by refreshing the occupied size in case it changed while the tab was open
             flash_update_summary(function() {
-                var
-                    maxBytes = DATAFLASH.usedSize;
+                const maxBytes = DATAFLASH.usedSize;
 
-                prepare_file(function(fileWriter) {
-                    var
-                        nextAddress = 0;
+                prepare_file(function(filename) {
+                    const fs = require('fs');
+                    let nextAddress = 0;
 
                     show_saving_dialog();
 
-                    function onChunkRead(chunkAddress, chunkDataView) {
-                        if (chunkDataView != null) {
+                    function onChunkRead(chunkAddress, chunk) {
+                        if (chunk != null) {
                             // Did we receive any data?
-                            if (chunkDataView.byteLength > 0) {
-                                nextAddress += chunkDataView.byteLength;
+                            if (chunk.byteLength > 0) {
+                                nextAddress += chunk.byteLength;
 
                                 $(".dataflash-saving progress").attr("value", nextAddress / maxBytes * 100);
 
-                                var
-                                    blob = new Blob([chunkDataView]);
+                                fs.writeFileSync(filename, new Uint8Array(chunk), {
+                                    "flag": "a"
+                                })
 
-                                fileWriter.onwriteend = function(e) {
-                                    if (saveCancelled || nextAddress >= maxBytes) {
-                                        if (saveCancelled) {
-                                            dismiss_saving_dialog();
-                                        } else {
-                                            mark_saving_dialog_done();
-                                        }
-                                    } else {
-                                        mspHelper.dataflashRead(nextAddress, onChunkRead);
-                                    }
-                                };
+                                if (saveCancelled) {
+                                    dismiss_saving_dialog();
+                                } else if (nextAddress >= maxBytes) {
+                                    mark_saving_dialog_done();
+                                }else {
+                                    mspHelper.dataflashRead(nextAddress, onChunkRead);
+                                }
 
-                                fileWriter.write(blob);
                             } else {
                                 // A zero-byte block indicates end-of-file, so we're done
                                 mark_saving_dialog_done();
@@ -38374,50 +39321,23 @@ TABS.onboard_logging.initialize = function (callback) {
     }
 
     function prepare_file(onComplete) {
-        var
-            date = new Date(),
-            filename = 'blackbox_log_' + date.getFullYear() + '-'  + zeroPad(date.getMonth() + 1, 2) + '-'
+        const date = new Date();
+        const filename = 'blackbox_log_' + date.getFullYear() + '-'  + zeroPad(date.getMonth() + 1, 2) + '-'
                 + zeroPad(date.getDate(), 2) + '_' + zeroPad(date.getHours(), 2) + zeroPad(date.getMinutes(), 2)
                 + zeroPad(date.getSeconds(), 2);
+        const accepts = [{
+            description: 'TXT files', extensions: ['txt'],
+        }];
 
-        chrome.fileSystem.chooseEntry({type: 'saveFile', suggestedName: filename,
-                accepts: [{extensions: ['TXT']}]}, function(fileEntry) {
-            var error = chrome.runtime.lastError;
-
-            if (error) {
-                console.error(error.message);
-
-                if (error.message != "User cancelled") {
-                    GUI.log(chrome.i18n.getMessage('dataflashFileWriteFailed'));
-                }
-                return;
-            }
-
-            // echo/console log path specified
-            chrome.fileSystem.getDisplayPath(fileEntry, function(path) {
-                console.log('Dataflash dump file path: ' + path);
-            });
-
-            fileEntry.createWriter(function (fileWriter) {
-                fileWriter.onerror = function (e) {
-                    console.error(e);
-
-                    // stop logging if the procedure was/is still running
-                };
-
-                onComplete(fileWriter);
-            }, function (e) {
-                // File is not readable or does not exist!
-                console.error(e);
-                GUI.log(chrome.i18n.getMessage('dataflashFileWriteFailed'));
-            });
+        nwdialog.setContext(document);
+        nwdialog.saveFileDialog(filename, accepts, '', function(file) {                
+            onComplete(file);
         });
     }
 
     function ask_to_erase_flash() {
         eraseCancelled = false;
         $(".dataflash-confirm-erase").removeClass('erasing');
-
         $(".dataflash-confirm-erase")[0].showModal();
     }
 
@@ -38456,7 +39376,7 @@ TABS.onboard_logging.cleanup = function (callback) {
     }
 };
 
-/*global $*/
+/*global $,nwdialog*/
 'use strict';
 
 var SYM = SYM || {};
@@ -38484,8 +39404,8 @@ SYM.WH = 0xAB;
 SYM.WATT = 0xAE;
 SYM.MAH_KM_0 = 157;
 SYM.MAH_KM_1 = 158;
-SYM.WH_KM_0 = 172;
-SYM.WH_KM_1 = 173;
+SYM.WH_KM = 172;
+SYM.WH_MI = 173;
 SYM.GPS_SAT1 = 0x1E;
 SYM.GPS_SAT2 = 0x1F;
 SYM.GPS_HDP1 = 0xBD;
@@ -38548,6 +39468,7 @@ SYM.DB = 0xEB;
 SYM.DBM = 0xEC;
 SYM.MW = 0xED;
 SYM.SNR = 0xEE;
+SYM.LQ = 0x0C;
 SYM.GVAR_1 = 0xEF;
 SYM.GVAR_2 = 0xF0;
 SYM.GVAR_3 = 0xF1;
@@ -38652,31 +39573,13 @@ FONT.parseMCMFontFile = function (data) {
 //noinspection JSUnusedLocalSymbols
 FONT.openFontFile = function ($preview) {
     return new Promise(function (resolve) {
-        //noinspection JSUnresolvedVariable
-        chrome.fileSystem.chooseEntry({type: 'openFile', accepts: [
-            {extensions: ['mcm']}
-        ]}, function (fileEntry) {
-            FONT.data.loaded_font_file = fileEntry.name;
-            //noinspection JSUnresolvedVariable
-            if (chrome.runtime.lastError) {
-                //noinspection JSUnresolvedVariable
-                console.error(chrome.runtime.lastError.message);
-                return;
-            }
-            fileEntry.file(function (file) {
-                var reader = new FileReader();
-                reader.onloadend = function (e) {
-                    //noinspection JSUnresolvedVariable
-                    if (e.total != 0 && e.total == e.loaded) {
-                        FONT.parseMCMFontFile(e.target.result);
-                        resolve();
-                    }
-                    else {
-                        console.error('could not load whole font file');
-                    }
-                };
-                reader.readAsText(file);
-            });
+
+        nwdialog.setContext(document);
+        nwdialog.openFileDialog('.mcm', function(filename) {
+            const fs = require('fs');
+            const fontData = fs.readFileSync(filename, {flag: "r"});
+            FONT.parseMCMFontFile(fontData.toString());
+            resolve();
         });
     });
 };
@@ -39230,6 +40133,11 @@ OSD.constants = {
                     id: 106,
                     min_version: '2.3.0',
                     preview: FONT.symbol(SYM.RPM) + '983',
+                },
+                {
+                    name: 'VERSION',
+                    id: 119,
+                    preview: 'INAV 2.7.0'
                 }
             ]
         },
@@ -39416,6 +40324,11 @@ OSD.constants = {
                         }
                         return FONT.embed_dot('-0.5') + FONT.symbol(SYM.M_S);
                     }
+                },
+                {
+                    name: 'OSD_RANGEFINDER',
+                    id: 120,
+                    preview: "2" + FONT.symbol(SYM.DIST_KM)
                 }
             ]
         },
@@ -39571,8 +40484,28 @@ OSD.constants = {
                 {
                     name: 'EFFICIENCY_WH',
                     id: 39,
-                    preview: FONT.embed_dot('1.23') + FONT.symbol(SYM.WH_KM_0) + FONT.symbol(SYM.WH_KM_1)
+                    preview: FONT.embed_dot('1.23') + FONT.symbol(SYM.WH_KM)
                 }
+            ]
+        },
+        {
+            name: 'osdGroupPowerLimits',
+            items: [
+                {
+                    name: 'PLIMIT_REMAINING_BURST_TIME',
+                    id: 121,
+                    preview: FONT.embed_dot('10.0S')
+                },
+                {
+                    name: 'PLIMIT_ACTIVE_CURRENT_LIMIT',
+                    id: 122,
+                    preview: FONT.embed_dot('42.1') + FONT.symbol(SYM.AMP)
+                },
+                {
+                    name: 'PLIMIT_ACTIVE_POWER_LIMIT',
+                    id: 123,
+                    preview: '500' + FONT.symbol(SYM.WATT)
+                },
             ]
         },
         {
@@ -39644,8 +40577,9 @@ OSD.constants = {
                     id: 97,
                     preview: function() {
                         let digits = parseInt(Settings.getInputValue('osd_plus_code_digits')) + 1;
+                        let digitsRemoved = parseInt(Settings.getInputValue('osd_plus_code_short')) * 2;
                         console.log("DITIS", digits);
-                        return '9547X6PM+VWCCC'.substr(0, digits);
+                        return '9547X6PM+VWCCC'.substr(digitsRemoved, digits-digitsRemoved);
                     }
                 },
                 {
@@ -39738,12 +40672,12 @@ OSD.constants = {
                     }
                 },
                 {
-                    name: 'CRUISE_HEADING_ERROR',
+                    name: 'COURSE_HOLD_ERROR',
                     id: 51,
                     preview: FONT.symbol(SYM.HEADING) + '  5' + FONT.symbol(SYM.DEGREES)
                 },
                 {
-                    name: 'CRUISE_HEADING_ADJUSTMENT',
+                    name: 'COURSE_HOLD_ADJUSTMENT',
                     id: 52,
                     preview: FONT.symbol(SYM.HEADING) + ' -90' + FONT.symbol(SYM.DEGREES)
                 },
@@ -39819,13 +40753,15 @@ OSD.constants = {
                     id: 110,
                     positionable: true,
                     preview: function(osd_data) {
-                    var crsflqformat;
-                    if (Settings.getInputValue('osd_crsf_lq_format') == 1) {
-                        crsflqformat = '2:100%';
-                    } else {
-                        crsflqformat = '  300%';
-                    }
-                    return crsflqformat;
+                        var crsflqformat;
+                        if (Settings.getInputValue('osd_crsf_lq_format') == 0) {
+                            crsflqformat = FONT.symbol(SYM.LQ) + '100';
+                        } else if (Settings.getInputValue('osd_crsf_lq_format') == 1){
+                            crsflqformat = FONT.symbol(SYM.LQ) + '2:100';
+                        } else {
+                            crsflqformat = FONT.symbol(SYM.LQ) + '300';
+                        }
+                        return crsflqformat;
                     }
                 },
                 {
@@ -39877,17 +40813,17 @@ OSD.constants = {
                 {
                     name: 'ROLL_PIDS',
                     id: 16,
-                    preview: 'ROL  40  30  23'
+                    preview: 'ROL  40  30  20  23'
                 },
                 {
                     name: 'PITCH_PIDS',
                     id: 17,
-                    preview: 'PIT  40  30  23'
+                    preview: 'PIT  40  30  20  23'
                 },
                 {
                     name: 'YAW_PIDS',
                     id: 18,
-                    preview: 'YAW  85  45   0'
+                    preview: 'YAW  85  45   0  20'
                 },
                 {
                     name: 'LEVEL_PIDS',
@@ -41935,31 +42871,19 @@ TABS.pid_tuning.initialize = function (callback) {
         pid_and_rc_to_form();
 
         var $magHoldYawRate                 = $("#magHoldYawRate"),
-            $gyroSoftLpfHz                  = $('#gyroSoftLpfHz'),
             $accSoftLpfHz                   = $('#accSoftLpfHz'),
-            $dtermLpfHz                     = $('#dtermLpfHz'),
             $yawLpfHz                       = $('#yawLpfHz');
 
         $magHoldYawRate.val(INAV_PID_CONFIG.magHoldRateLimit);
-        $gyroSoftLpfHz.val(FILTER_CONFIG.gyroSoftLpfHz);
         $accSoftLpfHz.val(INAV_PID_CONFIG.accSoftLpfHz);
-        $dtermLpfHz.val(FILTER_CONFIG.dtermLpfHz);
         $yawLpfHz.val(FILTER_CONFIG.yawLpfHz);
 
         $magHoldYawRate.change(function () {
             INAV_PID_CONFIG.magHoldRateLimit = parseInt($magHoldYawRate.val(), 10);
         });
 
-        $gyroSoftLpfHz.change(function () {
-            FILTER_CONFIG.gyroSoftLpfHz = parseInt($gyroSoftLpfHz.val(), 10);
-        });
-
         $accSoftLpfHz.change(function () {
             INAV_PID_CONFIG.accSoftLpfHz = parseInt($accSoftLpfHz.val(), 10);
-        });
-
-        $dtermLpfHz.change(function () {
-            FILTER_CONFIG.dtermLpfHz = parseInt($dtermLpfHz.val(), 10);
         });
 
         $yawLpfHz.change(function () {
@@ -42128,6 +43052,12 @@ TABS.ports.initialize = function (callback) {
 
     functionRules.push({
         name: 'SMARTPORT_MASTER',
+        groups: ['peripherals'],
+        maxPorts: 1 }
+    );
+
+    functionRules.push({
+        name: 'IMU2',
         groups: ['peripherals'],
         maxPorts: 1 }
     );
@@ -42630,19 +43560,23 @@ TABS.programming.initialize = function (callback, scrollPosition) {
 
     loadChainer.setChain([
         mspHelper.loadLogicConditions,
-        mspHelper.loadGlobalVariablesStatus
+        mspHelper.loadGlobalVariablesStatus,
+        mspHelper.loadProgrammingPidStatus,
+        mspHelper.loadProgrammingPid
     ]);
     loadChainer.setExitPoint(loadHtml);
     loadChainer.execute();
 
     saveChainer.setChain([
         mspHelper.sendLogicConditions,
+        mspHelper.sendProgrammingPid,
         mspHelper.saveToEeprom
     ]);
     
     statusChainer.setChain([
         mspHelper.loadLogicConditionsStatus,
-        mspHelper.loadGlobalVariablesStatus
+        mspHelper.loadGlobalVariablesStatus,
+        mspHelper.loadProgrammingPidStatus
     ]);
     statusChainer.setExitPoint(onStatusPullDone);
 
@@ -42652,8 +43586,11 @@ TABS.programming.initialize = function (callback, scrollPosition) {
 
     function processHtml() {
 
-        LOGIC_CONDITIONS.init($('#programming-main-content'));
+        LOGIC_CONDITIONS.init($('#subtab-lc'));
         LOGIC_CONDITIONS.render();
+
+        PROGRAMMING_PID.init($('#subtab-pid'));
+        PROGRAMMING_PID.render();
 
         GLOBAL_VARIABLES_STATUS.init($(".gvar__container"));
 
@@ -42675,6 +43612,7 @@ TABS.programming.initialize = function (callback, scrollPosition) {
     function onStatusPullDone() {
         LOGIC_CONDITIONS.update(LOGIC_CONDITIONS_STATUS);
         GLOBAL_VARIABLES_STATUS.update($('.tab-programming'));
+        PROGRAMMING_PID.update(PROGRAMMING_PID_STATUS);
     }
 }
 
@@ -45084,16 +46022,12 @@ helper.defaultsDialog = (function() {
                 Filtering
                 */
                 {
-                    key: "gyro_lpf_hz",
+                    key: "gyro_main_lpf_hz",
                     value: 110
                 },
                 {
-                    key: "gyro_lpf_type",
+                    key: "gyro_main_lpf_type",
                     value: "PT1"
-                },
-                {
-                    key: "gyro_stage2_lowpass_hz",
-                    value: 0
                 },
                 {
                     key: "dterm_lpf_hz",
@@ -45110,10 +46044,6 @@ helper.defaultsDialog = (function() {
                 {
                     key: "dterm_lpf2_type",
                     value: "PT1"
-                },
-                {
-                    key: "use_dterm_fir_filter",
-                    value: "OFF"
                 },
                 {
                     key: "dynamic_gyro_notch_enabled",
@@ -45139,16 +46069,8 @@ helper.defaultsDialog = (function() {
                 Mechanics
                 */
                 {
-                    key: "mc_airmode_type",
+                    key: "airmode_type",
                     value: "THROTTLE_THRESHOLD"
-                },
-                {
-                    key: "dterm_setpoint_weight",
-                    value: 0.75
-                },
-                {
-                    key: "mc_iterm_relax_type",
-                    value: "SETPOINT"
                 },
                 {
                     key: "mc_iterm_relax",
@@ -45246,15 +46168,59 @@ helper.defaultsDialog = (function() {
             ]
         },
         {
-            "title": 'Airplane',
+            "title": 'Airplane with a Tail',
             "notRecommended": false,
             "id": 3,
             "reboot": true,
             "settings": [
+		{
+                    key: "platform_type",
+                    value: "AIRPLANE"
+                },
+		{
+                    key: "applied_defaults",
+                    value: 3
+                },
+                {
+                    key: "gyro_hardware_lpf",
+                    value: "256HZ"
+                },
+                {
+                    key: "gyro_main_lpf_hz",
+                    value: 25
+                },
+		        {
+                    key: "dterm_lpf_hz",
+                    value: 40
+                },
+                {
+                    key: "d_boost_factor",
+                    value: 1
+                },
+                {
+                    key: "gyro_main_lpf_type",
+                    value: "BIQUAD"
+                },
+                {
+                    key: "dynamic_gyro_notch_enabled",
+                    value: "ON"
+                },
+                {
+                    key: "dynamic_gyro_notch_q",
+                    value: 250
+                },
+                {
+                    key: "dynamic_gyro_notch_min_hz",
+                    value: 30
+                },
                 {
                     key: "motor_pwm_protocol",
                     value: "STANDARD"
                 },
+		{ 
+		    key: "throttle_idle",
+		    value: 5.0
+		},
                 {
                     key: "rc_yaw_expo",
                     value: 30
@@ -45265,15 +46231,83 @@ helper.defaultsDialog = (function() {
                 },
                 {
                     key: "roll_rate",
-                    value: 20
+                    value: 18
                 },
                 {
                     key: "pitch_rate",
-                    value: 15
+                    value: 9
                 },
                 {
                     key: "yaw_rate",
-                    value: 9
+                    value: 3
+                },
+		{ 
+		    key: "nav_fw_pos_z_p",
+		    value: 20
+		},
+		{ 
+		    key: "nav_fw_pos_z_d",
+		    value: 5
+		},
+		{ 
+		    key: "nav_fw_pos_xy_p",
+		    value: 50
+		},
+		{ 
+		    key: "fw_turn_assist_pitch_gain",
+		    value: 0.5
+		},
+		{ 
+		    key: "max_angle_inclination_rll",
+		    value: 350
+		},
+		{ 
+                    key: "nav_fw_bank_angle",
+                    value: 35
+		},
+		{ 
+                    key: "fw_p_pitch",
+                    value: 15
+		},
+		{ 
+                    key: "fw_i_pitch",
+                    value: 10
+		},
+		{ 
+                    key: "fw_ff_pitch",
+                    value: 60
+		},
+		{ 
+                    key: "fw_p_roll",
+                    value: 10
+		},
+		{ 
+                    key: "fw_i_roll",
+                    value: 8
+		},
+		{ 
+                    key: "fw_ff_roll",
+                    value: 40
+		},
+		{ 
+                    key: "fw_p_yaw",
+                    value: 20
+		},
+		{ 
+                    key: "fw_i_yaw",
+                    value: 5
+		},
+		{ 
+                    key: "fw_ff_yaw",
+                    value: 100
+		},
+				{
+                    key: "imu_acc_ignore_rate",
+                    value: 10
+                },
+				{
+                    key: "airmode_type",
+                    value: "STICK_CENTER_ONCE"
                 },
                 {
                     key: "small_angle",
@@ -45293,20 +46327,12 @@ helper.defaultsDialog = (function() {
                 },
                 {
                     key: "failsafe_mission",
-                    value: "OFF"
+                    value: "ON"
                 },
                 {
                     key: "nav_wp_radius",
-                    value: 3000
+                    value: 1500
                 },
-                {
-                    key: "platform_type",
-                    value: "AIRPLANE"
-                },
-                {
-                    key: "applied_defaults",
-                    value: 3
-                }
             ],
             "features":[
                 {
@@ -45315,11 +46341,197 @@ helper.defaultsDialog = (function() {
                 }
             ]
         },
+		{
+            "title": 'Airplane without a Tail (Wing, Delta, etc)',
+            "notRecommended": false,
+            "id": 3,
+            "reboot": true,
+            "settings": [
+		{
+                    key: "platform_type",
+                    value: "AIRPLANE"
+                },
+				{
+                    key: "applied_defaults",
+                    value: 3
+                },
+                {
+                    key: "gyro_hardware_lpf",
+                    value: "256HZ"
+                },
+                {
+                    key: "gyro_main_lpf_hz",
+                    value: 25
+                },
+		        {
+                    key: "dterm_lpf_hz",
+                    value: 40
+                },
+                {
+                    key: "d_boost_factor",
+                    value: 1
+                },
+                {
+                    key: "gyro_main_lpf_type",
+                    value: "BIQUAD"
+                },
+                {
+                    key: "dynamic_gyro_notch_enabled",
+                    value: "ON"
+                },
+                {
+                    key: "dynamic_gyro_notch_q",
+                    value: 250
+                },
+                {
+                    key: "dynamic_gyro_notch_min_hz",
+                    value: 30
+                },
+                {
+                    key: "motor_pwm_protocol",
+                    value: "STANDARD"
+                },
+		{ 
+                    key: "throttle_idle",
+                    value: 5.0
+		},
+                {
+                    key: "rc_yaw_expo",
+                    value: 30
+                },
+                {
+                    key: "rc_expo",
+                    value: 30
+                },
+                {
+                    key: "roll_rate",
+                    value: 18
+                },
+                {
+                    key: "pitch_rate",
+                    value: 9
+                },
+                {
+                    key: "yaw_rate",
+                    value: 3
+                },
+		{ 
+                    key: "nav_fw_pos_z_p",
+                    value: 20
+		},
+		{ 
+                    key: "nav_fw_pos_z_d",
+                    value: 5
+		},
+		{ 
+                    key: "nav_fw_pos_xy_p",
+                    value: 50
+		},
+		{ 
+                    key: "fw_turn_assist_pitch_gain",
+                    value: 0.2
+		},
+		{ 
+                    key: "max_angle_inclination_rll",
+                    value: 450
+		},
+		{ 
+                    key: "nav_fw_bank_angle",
+                    value: 45
+		},
+		{ 
+                    key: "fw_p_pitch",
+                    value: 10
+		},
+		{ 
+                    key: "fw_i_pitch",
+                    value: 15
+		},
+		{ 
+                    key: "fw_ff_pitch",
+                    value: 70
+		},
+		{ 
+                    key: "fw_p_roll",
+                    value: 5
+		},
+		{ 
+                    key: "fw_i_roll",
+                    value: 8
+		},
+		{ 
+                    key: "fw_ff_roll",
+                    value: 35
+		},
+		{ 
+                    key: "fw_p_yaw",
+                    value: 20
+		},
+		{ 
+                    key: "fw_i_yaw",
+                    value: 5
+		},
+		{ 
+                    key: "fw_ff_yaw",
+                    value: 100
+		},
+		{
+                    key: "imu_acc_ignore_rate",
+                    value: 10
+                },
+		{
+                    key: "airmode_type",
+                    value: "STICK_CENTER_ONCE"
+                },
+                {
+                    key: "small_angle",
+                    value: 180
+                },
+                {
+                    key: "nav_fw_control_smoothness",
+                    value: 2
+                },
+                {
+                    key: "nav_rth_allow_landing",
+                    value: "FS_ONLY"
+                },
+                {
+                    key: "nav_rth_altitude",
+                    value: 5000
+                },
+                {
+                    key: "failsafe_mission",
+                    value: "ON"
+                },
+                {
+                    key: "nav_wp_radius",
+                    value: 1500
+                },
+	   ],
+            "features":[
+                {
+                    bit: 4, // Enable MOTOR_STOP
+                    state: true
+                }
+            ]
+		},
         {
             "title": 'Rovers & Boats',
             "notRecommended": false,
             "reboot": true,
             "settings": [
+                {
+                    key: "gyro_hardware_lpf",
+                    value: "256HZ"
+                },
+                {
+                    key: "gyro_main_lpf_hz",
+                    value: 10
+                },
+                {
+                    key: "gyro_main_lpf_type",
+                    value: "BIQUAD"
+                },
                 {
                     key: "motor_pwm_protocol",
                     value: "STANDARD"
@@ -45491,6 +46703,734 @@ helper.defaultsDialog = (function() {
     return publicScope;
 })();
 
+'use strict';
+
+let SafehomeCollection = function () {
+
+    let self = {},
+        data = [],
+        maxSafehomeCount = 8;
+
+    self.setMaxSafehomeCount = function (value) {
+        maxSafehomeCount = value;
+    };
+
+    self.getMaxSafehomeCount = function () {
+        return maxSafehomeCount;
+    }
+
+    self.put = function (element) {
+        data.push(element);
+    };
+
+    self.get = function () {
+        return data;
+    };
+    
+    self.clean = function (index){
+        data[index].cleanup();
+    };
+
+    self.flush = function () {
+        data = [];
+    };
+
+    self.inflate = function () {
+        while (self.hasFreeSlots()) {
+            self.put(new Safehome(data.length, 0, 0, 0));
+        }
+    };
+
+    self.hasFreeSlots = function () {
+        return data.length < self.getMaxSafehomeCount();
+    };
+
+    self.isSafehomeConfigured = function(safehomeId) {
+
+        for (let safehomeIndex in data) {
+            if (data.hasOwnProperty(safehomeIndex)) {
+                let safehome = data[safehomeIndex];
+
+                if (safehome.getNumber() == safehomeId && safehome.isUsed()) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+
+    self.getNumberOfConfiguredSafehome = function () {
+        let count = 0;
+        for (let i = 0; i < self.getMaxSafehomeCount(); i ++) {
+            if (self.isSafehomeConfigured(i)) {
+                count++;
+            }
+        }
+        return count;
+    };
+
+    self.getUsedSafehomeIndexes = function () {
+        let out = [];
+
+        for (let safehomeIndex in data) {
+            if (data.hasOwnProperty(safehomeIndex)) {
+                let safehome = data[safehomeIndex];
+                out.push(safehome.getNumber());
+            }
+        }
+
+        let unique = [...new Set(out)];
+
+        return unique.sort(function(a, b) {
+            return a-b;
+        });
+    }
+    
+    self.getSafehome = function(safehomeId) {
+        for (let safehomeIndex in data) {
+            if (data.hasOwnProperty(safehomeIndex)) {
+                let safehome = data[safehomeIndex];
+                if (safehome.getNumber() == safehomeId ) {
+                    return safehome;
+                }
+            }
+        }
+    };
+    
+    self.updateSafehome = function(newSafehome) {
+        data[newSafehome.getNumber()] = newSafehome;
+    };
+    
+    self.extractBuffer = function(safehomeId) {
+        let buffer = [];
+        let safehome = self.getSafehome(safehomeId);
+        buffer.push(safehome.getNumber());    // sbufReadU8(src);    // number
+        buffer.push(safehome.getEnabled());    // sbufReadU8(src);    // action
+        buffer.push(specificByte(safehome.getLat(), 0));    // sbufReadU32(src);      // lat
+        buffer.push(specificByte(safehome.getLat(), 1));
+        buffer.push(specificByte(safehome.getLat(), 2));
+        buffer.push(specificByte(safehome.getLat(), 3));
+        buffer.push(specificByte(safehome.getLon(), 0));    // sbufReadU32(src);      // lon
+        buffer.push(specificByte(safehome.getLon(), 1));
+        buffer.push(specificByte(safehome.getLon(), 2));
+        buffer.push(specificByte(safehome.getLon(), 3));
+        
+        return buffer;
+    }
+    
+    self.safehomeDisplayDebug = function() {
+        if (data && data.length != 0) {
+            data.forEach(function (element) {
+                console.log("N° : ", element.getNumber(),
+                            "Enabled : ", element.getEnabled(),
+                            "Lon : ", element.getLon(),
+                            "Lat : ", element.getLat(),
+                           );
+            });
+        }
+    }
+    
+
+    return self;
+};
+/*global $*/
+'use strict';
+
+
+let Safehome = function (number, enabled, lat, lon) {
+
+    var self = {};
+
+    self.getNumber = function () {
+        return number;
+    };
+
+    self.setNumber = function (data) {
+        number = data;
+    };
+
+    self.getLon = function () {
+        return lon;
+    };
+
+    self.setLon = function (data) {
+        lon = data;
+    };
+    
+    self.getLonMap = function () {
+        return lon / 1e7;
+    };
+
+    self.getLat = function () {
+        return lat;
+    };
+
+    self.setLat = function (data) {
+        lat = data;
+    };
+    
+     self.getLatMap = function () {
+        return lat / 1e7;
+    };
+
+    self.isUsed = function () {
+        return enabled == 1;
+    };
+    
+    self.getEnabled = function () {
+        return enabled;
+    };
+    
+    self.setEnabled = function (data) {
+        enabled = data;
+    };
+    
+    self.cleanup = function () {
+        number = 0;
+        enabled = 0;
+        lon = 0;
+        lat = 0;
+    };
+
+    return self;
+};
+'use strict';
+
+
+let WaypointCollection = function () {
+
+    let self = {},
+        data = [],
+        maxWaypoints = 60,
+        isValidMission = 0,
+        countBusyPoints = 0,
+        version = 0,
+        center = {}
+        
+    self.getMaxWaypoints = function () {
+        return maxWaypoints;
+    };
+
+    self.setMaxWaypoints = function (data) {
+        maxWaypoints = data;
+    };
+    
+    self.getValidMission = function () {
+        return isValidMission;
+    };
+    
+    self.setValidMission = function (data) {
+        isValidMission = data;
+    };
+    
+    self.getCountBusyPoints = function () {
+        return countBusyPoints;
+    };
+
+    self.setCountBusyPoints = function (data) {
+        countBusyPoints = data;
+    };
+    
+    self.getVersion = function () {
+        return version;
+    };
+
+    self.setVersion = function (data) {
+        version = data;
+    };
+    
+    self.getCenter = function () {
+        return center;
+    };
+    
+    self.setCenter = function (data) {
+        center = data;
+    };
+
+    self.setCenterZoom = function (data) {
+        center.zoom = data;
+    };
+    
+    self.setCenterLon = function (data) {
+        center.lon = data;
+    };
+    
+    self.setCenterLat = function (data) {
+        center.lat = data;
+    };
+
+    self.put = function (element) {
+        data.push(element);
+    };
+
+    self.get = function () {
+        return data;
+    };
+    
+    self.isEmpty = function () {
+        return data == [];
+    };
+
+    self.flush = function () {
+        data = [];
+    };
+    
+    self.reinit = function () {
+        data = [];
+        maxWaypoints = 60;
+        isValidMission = 0;
+        countBusyPoints = 0;
+        version = 0;
+        center = {};
+    };
+
+    self.getWaypoint = function(waypointId) {
+        for (let waypointIndex in data) {
+            if (data.hasOwnProperty(waypointIndex)) {
+                let waypoint = data[waypointIndex];
+
+                if (waypoint.getNumber() == waypointId ) {
+                    return waypoint;
+                }
+            }
+        }
+    };
+    
+    self.updateWaypoint = function(newWaypoint) {
+        if (newWaypoint.isUsed()) {
+            data[newWaypoint.getNumber()] = newWaypoint;
+        }
+    };
+    
+    self.dropWaypoint = function(newWaypoint) {
+        self.getWaypoint(newWaypoint.getNumber()).setUsed(false);
+        let indexId = newWaypoint.getNumber()
+        data.forEach(function (wp) {
+            if (wp.getNumber() >= indexId) {
+                wp.setNumber(wp.getNumber()-1);
+            }
+            if (wp.getAction() == MWNP.WPTYPE.JUMP && wp.getP1()>=indexId) {
+                wp.setP1(wp.getP1()-1);
+            }
+        });
+        data.splice(indexId, 1);
+
+    };
+    
+    self.insertWaypoint = function (newWaypoint, indexId) {
+        data.forEach(function (wp) {
+            if (wp.getNumber() >= indexId) {
+                wp.setNumber(wp.getNumber()+1);
+            }
+            if (wp.getAction() == MWNP.WPTYPE.JUMP && wp.getP1()>=indexId) {
+                wp.setP1(wp.getP1()+1);
+            }
+        });
+        data.splice(indexId, 0, newWaypoint);
+    };
+
+    
+    self.drop = function (waypointId) {
+        self.getWaypoint(waypointId).setUsed(false);
+        var tmpData = [];
+        let idx = 0;
+        data.forEach(function (element) {
+            if (element.isUsed()) {
+                element.setNumber(idx)
+                tmpData.push(element);
+                idx++;
+            }
+        });
+
+        data = tmpData;
+    };
+    
+    self.update = function (bMWPfile=false, bReverse=false) {
+        let oldWPNumber = 0;
+        let optionIdx = 0;
+        let idx = 0;
+        data.forEach(function (element) {
+            if (element.isUsed()) {
+                if (bMWPfile && !bReverse) {
+                    element.setNumber(element.getNumber()-1);
+                    if (element.getAction() == MWNP.WPTYPE.JUMP) {
+                        element.setP1(element.getP1()-1);
+                    }
+                }
+                else if (bMWPfile && bReverse) {
+                    element.setNumber(element.getNumber()+1);
+                    if (element.getAction() == MWNP.WPTYPE.JUMP) {
+                        element.setP1(element.getP1()+1);
+                    }
+                }
+                
+                if ([MWNP.WPTYPE.JUMP,MWNP.WPTYPE.SET_HEAD,MWNP.WPTYPE.RTH].includes(element.getAction())) {
+                    element.setAttachedId(oldWPNumber);
+                    element.setAttachedNumber(optionIdx);
+                    element.setAttached(true);
+                    optionIdx++;
+                }
+                else {
+                    oldWPNumber = element.getNumber();
+                    element.setLayerNumber(idx);
+                    optionIdx = 0;
+                    idx++;
+                }
+                if (element.getNumber() == ((bMWPfile && bReverse) ? self.get().length : self.get().length-1)) {
+                    element.setEndMission(0xA5);
+                }
+                else {
+                    element.setEndMission(0);
+                }
+            }
+        });
+    };
+    
+    self.getNonAttachedList = function () {
+        let tmpData = [];
+        data.forEach(function (element) {
+            if (!element.isAttached()) {
+                tmpData.push(element);
+            }
+        });
+
+        return tmpData;
+    } 
+    
+    self.getAttachedList = function () {
+        let tmpData = [];
+        data.forEach(function (element) {
+            if (element.isAttached()) {
+                tmpData.push(element);
+            }
+        });
+
+        return tmpData;
+    } 
+    
+    self.getAttachedFromWaypoint = function (waypoint) {
+        let tmpData = [];
+        data.forEach(function (element) {
+            if (element.isAttached() && element.getAttachedId() == waypoint.getNumber()) {
+                tmpData.push(element);
+            }
+        });
+
+        return tmpData;
+    } 
+    
+    self.addAttachedFromWaypoint = function (waypoint) {
+        let tmpNumber = 0;
+        let tmpData = self.getAttachedFromWaypoint(waypoint);
+        if (tmpData != 'undefined' && tmpData.length !=0) {
+            tmpNumber = tmpData.length;
+        }
+        let tempWp = new Waypoint(waypoint.getNumber()+tmpNumber+1, MWNP.WPTYPE.JUMP, 0, 0);
+        tempWp.setAttached(true);
+        tempWp.setAttachedId(waypoint.getNumber());
+        self.insertWaypoint(tempWp, waypoint.getNumber()+tmpNumber+1);
+        self.update();
+    } 
+    
+    self.dropAttachedFromWaypoint = function (waypoint, waypointAttachedNumber) {
+        data.forEach(function (element) {
+            if (element.isAttached() && element.getAttachedId() == waypoint.getNumber() && element.getAttachedNumber() == waypointAttachedNumber) {
+                self.dropWaypoint(element);
+                self.update();
+            }
+        });
+        
+    } 
+    
+    self.extractBuffer = function(waypointId) {
+        let buffer = [];
+        let waypoint = self.getWaypoint(waypointId);
+        buffer.push(waypoint.getNumber());    // sbufReadU8(src);    // number
+        buffer.push(waypoint.getAction());    // sbufReadU8(src);    // action
+        buffer.push(specificByte(waypoint.getLat(), 0));    // sbufReadU32(src);      // lat
+        buffer.push(specificByte(waypoint.getLat(), 1));
+        buffer.push(specificByte(waypoint.getLat(), 2));
+        buffer.push(specificByte(waypoint.getLat(), 3));
+        buffer.push(specificByte(waypoint.getLon(), 0));    // sbufReadU32(src);      // lon
+        buffer.push(specificByte(waypoint.getLon(), 1));
+        buffer.push(specificByte(waypoint.getLon(), 2));
+        buffer.push(specificByte(waypoint.getLon(), 3));
+        buffer.push(specificByte(waypoint.getAlt(), 0));    // sbufReadU32(src);      // to set altitude (cm)
+        buffer.push(specificByte(waypoint.getAlt(), 1));
+        buffer.push(specificByte(waypoint.getAlt(), 2));
+        buffer.push(specificByte(waypoint.getAlt(), 3));
+        buffer.push(lowByte(waypoint.getP1())); //sbufReadU16(src);       // P1 speed or landing
+        buffer.push(highByte(waypoint.getP1()));
+        buffer.push(lowByte(waypoint.getP2())); //sbufReadU16(src);       // P2
+        buffer.push(highByte(waypoint.getP2()));
+        buffer.push(lowByte(waypoint.getP3())); //sbufReadU16(src);       // P3
+        buffer.push(highByte(waypoint.getP3()));
+        buffer.push(waypoint.getEndMission()); //sbufReadU8(src);      // future: to set nav flag
+        
+        return buffer;
+    }
+    
+    self.missionDisplayDebug = function() {
+        if (data && data.length != 0) {
+            data.forEach(function (element) {
+                console.log("N° : ", element.getNumber(),
+                            "Action : ", element.getAction(),
+                            "Lon : ", element.getLon(),
+                            "Lat : ", element.getLat(),
+                            "Alt : ", element.getAlt(),
+                            "P1 : ", element.getP1(),
+                            "P2 : ", element.getP2(),
+                            "P3 : ", element.getP3(),
+                            "EndMission : ", element.getEndMission());
+            });
+        }
+    }
+    
+    self.copy = function(mission){
+        mission.get().forEach(function (element) {
+            self.put(element);
+        });
+        self.setMaxWaypoints(mission.getMaxWaypoints());
+        self.setValidMission(mission.getValidMission());
+        self.setCountBusyPoints(mission.getCountBusyPoints());
+        self.setVersion(mission.getVersion());
+        self.setCenter(mission.getCenter());
+    }
+    
+    self.convertJumpNumberToWaypoint = function(jumpId) {
+        let outputNumber = 0;
+        self.getNonAttachedList().forEach(function (element) {
+            if (element.getLayerNumber() == jumpId) {
+                outputNumber = element.getNumber();
+            }
+        });
+        return outputNumber;
+    }
+    
+    self.isJumpTargetAttached = function(waypoint) {
+        let lJumptTargetAttached = [];
+        data.forEach(function (element) {
+            if (element.getAction() == MWNP.WPTYPE.JUMP && element.getP1() == waypoint.getNumber()) {
+                lJumptTargetAttached.push(element.getNumber());
+            }
+        });
+        console.log("lJumptTargetAttached ", lJumptTargetAttached);
+        return (lJumptTargetAttached.length != 0 && lJumptTargetAttached != 'undefined')
+    }
+    
+    self.getPoiList = function() {
+        let poiList = [];
+        data.forEach(function (element) {
+            if (element.getAction() == MWNP.WPTYPE.SET_POI) {
+                poiList.push(element.getNumber());
+            }
+        });
+        return poiList;
+    }
+    
+    self.getDistance = function() {
+        let point2measure = []
+        let lengthLine = []
+        let jumpDict = {};
+        let nStart = 0;
+        let nLoop = 0;
+        let n = 0 ;
+        let startCount = true;
+        while (startCount && (nLoop!=-1)) {
+            if (nStart > data[data.length -1].getNumber() ) {
+                startCount = false;
+                break;
+            }
+
+            if ([MWNP.WPTYPE.WAYPOINT,MWNP.WPTYPE.POSHOLD_TIME,MWNP.WPTYPE.LAND].includes(self.getWaypoint(nStart).getAction())) {
+                point2measure.push(ol.proj.fromLonLat([self.getWaypoint(nStart).getLonMap(), self.getWaypoint(nStart).getLatMap()]));
+                nStart++;
+            }
+            else if (self.getWaypoint(nStart).getAction() == MWNP.WPTYPE.JUMP) {
+                if (!Object.keys(jumpDict).includes(String(self.getWaypoint(nStart).getNumber())) ) {
+                    jumpDict[self.getWaypoint(nStart).getNumber()] = {nStart: self.getWaypoint(nStart).getP1(), nLoop : self.getWaypoint(nStart).getP2(), n : 0};
+                }
+                if (Object.keys(jumpDict).includes(String(self.getWaypoint(nStart).getNumber())) ) {
+                    if (jumpDict[self.getWaypoint(nStart).getNumber()]["nLoop"] == -1) {
+                        nLoop = -1;
+                    }
+                    if ( (jumpDict[self.getWaypoint(nStart).getNumber()]["n"]>=jumpDict[self.getWaypoint(nStart).getNumber()]["nLoop"]  || jumpDict[self.getWaypoint(nStart).getNumber()]["nLoop"] ==0) ) {
+                        jumpDict[self.getWaypoint(nStart).getNumber()]["n"] = 0;
+                        nStart++;
+                    }
+                    else {
+                        jumpDict[self.getWaypoint(nStart).getNumber()]["n"] = jumpDict[self.getWaypoint(nStart).getNumber()]["n"]+1;
+                        let nStartTemp = jumpDict[self.getWaypoint(nStart).getNumber()]["nStart"];
+                        nStart = nStartTemp;
+                    }
+                }
+                
+            }
+            else {
+                nStart++;
+            }
+        }
+        if (nLoop == -1) {
+            return [-1];
+        }
+        else {
+        
+            const cumulativeSum = (sum => value => sum += value)(0);
+            
+            let oldCoord = [];
+            point2measure.forEach(function (coord) {
+                if (oldCoord != 'undefined' && oldCoord != []) {
+                    lengthLine.push(ol.Sphere.getLength(new ol.geom.LineString([oldCoord, coord])));
+                }
+                oldCoord = coord;
+            });
+            //console.log("lengthLine ", lengthLine);
+            return lengthLine.map(cumulativeSum);
+        }
+    }
+
+    return self;
+};
+/*global $*/
+'use strict';
+
+let Waypoint = function (number, action, lat, lon, alt=0, p1=0, p2=0, p3=0, endMission=0, isUsed=true, isAttached=false, attachedId="") {
+
+    var self = {};
+    let layerNumber = "undefined";
+    let attachedNumber = "undefined";
+    let poiNumber = "undefined";
+
+    self.getNumber = function () {
+        return number;
+    };
+
+    self.setNumber = function (data) {
+        number = data;
+    };
+    
+    self.getLayerNumber = function () {
+        return layerNumber;
+    };
+
+    self.setLayerNumber = function (data) {
+        layerNumber = data;
+    };
+    
+    self.getPoiNumber = function () {
+        return poiNumber;
+    };
+
+    self.setPoiNumber = function (data) {
+        poiNumber = data;
+    };
+    
+    self.isUsed = function () {
+        return isUsed;
+    };
+
+    self.setUsed = function (data) {
+        isUsed = data;
+    };
+    
+    self.isAttached = function () {
+        return isAttached;
+    };
+
+    self.setAttached = function (data) {
+        isAttached = data;
+    };
+
+    self.getLon = function () {
+        return lon;
+    };
+    
+    self.getLonMap = function () {
+        return lon / 10000000;
+    };
+
+    self.setLon = function (data) {
+        lon = data;
+    };
+
+    self.getLat = function () {
+        return lat;
+    };
+    
+    self.getLatMap = function () {
+        return lat / 10000000;
+    };
+
+    self.setLat = function (data) {
+        lat = data;
+    };
+    
+    self.getAction = function () {
+        return action;
+    };
+    
+    self.setAction = function (data) {
+        action = data;
+    };
+    
+    self.getAlt = function () {
+        return alt;
+    };
+    
+    self.setAlt = function (data) {
+        alt = data;
+    };
+    
+    self.getP1 = function () {
+        return p1;
+    };
+    
+    self.setP1 = function (data) {
+        p1 = data;
+    };
+    
+    self.getP2 = function () {
+        return p2;
+    };
+    
+    self.setP2 = function (data) {
+        p2 = data;
+    };
+    
+    self.getP3 = function () {
+        return p3;
+    };
+    
+    self.setP3 = function (data) {
+        p3 = data;
+    };
+    
+    self.getEndMission = function () {
+        return endMission;
+    };
+    
+    self.setEndMission = function (data) {
+        endMission = data;
+    };
+    
+    self.getAttachedId = function () {
+        return attachedId;
+    };
+
+    self.setAttachedId = function (data) {
+        attachedId = data;
+    };
+    
+    self.getAttachedNumber = function () {
+        return attachedNumber;
+    };
+
+    self.setAttachedNumber = function (data) {
+        attachedNumber = data;
+    };
+
+    return self;
+};
 // OpenLayers. See https://openlayers.org/
 // License: https://raw.githubusercontent.com/openlayers/openlayers/master/LICENSE.md
 // Version: v4.6.5
