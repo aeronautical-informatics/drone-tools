@@ -1,5 +1,5 @@
 #!/usr/bin/env nix-shell
-#!nix-shell -i bash --packages coreutils git yq nodejs-10_x yarn
+#!nix-shell -i bash --packages coreutils git yq nodejs-10_x "(yarn.override{nodejs=nodejs-10_x;})"
 
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"

@@ -1,0 +1,57 @@
+// jBox theme: TooltipSmallGray
+
+.jBox-TooltipSmallGray {
+  pointer-events: none;
+
+  .jBox-container {
+    font-size: 13px;
+    line-height: 24px;
+    border-radius: 12px;
+    background-image: linear-gradient(to bottom, #fafafa, #f2f2f2);
+  }
+
+  .jBox-content {
+    padding: 0 10px;
+  }
+
+  .jBox-pointer {
+    &:after {
+      width: 20px;
+      height: 20px;
+    }
+
+    &-top,
+    &-bottom {
+      width: 22px;
+      height: 8px;
+    }
+
+    &-left,
+    &-right {
+      width: 8px;
+      height: 22px;
+    }
+
+    &-top:after {
+      background: #fafafa;
+      left: 1px;
+      top: 6px;
+    }
+
+    &-right:after {
+      top: 1px;
+      right: 6px;
+    }
+
+    &-bottom:after {
+      background: #f2f2f2;
+      left: 1px;
+      bottom: 6px;
+    }
+
+    &-left:after {
+      top: 1px;
+      left: 6px;
+    }
+  }
+}
