@@ -1,0 +1,34 @@
+// jBox theme: TooltipBorderThick
+
+.jBox-TooltipBorderThick {
+  .jBox-container {
+    box-shadow: none;
+    border-radius: 8px;
+    border: 4px solid #ccc;
+  }
+
+  .jBox-pointer:after {
+    box-shadow: none;
+    border: 4px solid #ccc;
+    width: 24px;
+    height: 24px;
+  }
+
+  .jBox-pointer-top,
+  .jBox-pointer-bottom {
+    width: 38px;
+    height: 13px;
+  }
+
+  .jBox-pointer-left,
+  .jBox-pointer-right {
+    width: 13px;
+    height: 38px;
+  }
+
+  &.jBox-closeButton-box:before {
+    width: 32px;
+    height: 32px;
+    background: #ccc;
+  }
+}

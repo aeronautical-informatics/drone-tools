@@ -1,0 +1,38 @@
+// jBox theme: TooltipDark
+
+.jBox-TooltipDark {
+  .jBox-container {
+    border-radius: 4px;
+    background: #000;
+    color: #fff;
+    box-shadow: 0 0 6px rgba(0, 0, 0, .4);
+  }
+
+  .jBox-pointer:after {
+    background: #000;
+  }
+
+  .jBox-closeButton {
+    background: #000;
+  }
+
+  &.jBox-closeButton-box {
+    &:before {
+      box-shadow: 0 0 6px rgba(0, 0, 0, .4);
+    }
+
+    .jBox-closeButton {
+      path {
+        fill: #ddd;
+      }
+
+      &:hover path {
+        fill: #fff;
+      }
+
+      &:active path {
+        fill: #bbb;
+      }
+    }
+  }
+}
