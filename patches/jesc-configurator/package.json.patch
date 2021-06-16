@@ -1,0 +1,15 @@
+diff --git a/package.json b/package.json
+index 327df93..75f8d66 100644
+--- a/package.json
++++ b/package.json
+@@ -17,9 +17,7 @@
+   },
+   "author": "JoeLucid & DieHertz",
+   "license": "GPL-3.0",
+-  "dependencies": {
+-    "gulp-appdmg": "^1.0.3"
+-  },
++  "dependencies": {},
+   "devDependencies": {
+     "archiver": "^2.0.3",
+     "babel-cli": "^6.26.0",

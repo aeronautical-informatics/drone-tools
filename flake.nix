@@ -72,7 +72,11 @@
               git clone $url $srcdir
               cd $srcdir
               git fetch --tags --force --all
-              git checkout $tag
+              git reset --hard $tag
+              for patch in ../../patches/$name/*.patch
+              do
+                git apply $patch 
+              done
               yarn install 
               yarn gulp dist 
               mkdir -p "$SCRIPT_DIR/build"

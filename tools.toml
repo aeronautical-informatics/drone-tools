@@ -42,10 +42,10 @@ desktop_name = "BLHeli_m Configurator"
 comment = "Configure and Flash SiLabs ESCs with the JazzMaverick firmware"
 icon = "icon_128.png"
 
-#[[tools]]
-#name = "blheli_j-configurator"
-#url = "https://github.com/jflight-public/jesc-configurator/"
-#tag = "v1.2.10b1"
-#desktop_name = "BLHeli_j Configurator"
-#comment = "Configure and Flash SiLabs ESCs with the JESC firmware"
-#icon = "icon_128.png"
+[[tools]]
+name = "jesc-configurator"
+url = "https://github.com/jflight-public/jesc-configurator/"
+tag = "v1.2.10b1"
+desktop_name = "JESC Configurator"
+comment = "Configure and Flash SiLabs ESCs with the JESC firmware"
+icon = "icon_128.png"
