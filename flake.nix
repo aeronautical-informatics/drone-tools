@@ -9,33 +9,37 @@
         pkgs = nixpkgs.legacyPackages.${system};
         lib = nixpkgs.lib;
         tools = (lib.importTOML ./tools.toml).tools;
-      in rec {
-        packages = builtins.listToAttrs (builtins.map (tool:
-          let
-            name = tool.name;
-            desktopItem = pkgs.makeDesktopItem {
-              inherit name;
-              exec = name;
-              icon = name;
-              comment = tool.comment;
-              desktopName = tool.desktop_name;
-            };
-            pkg = pkgs.stdenv.mkDerivation {
-              inherit name;
-              src = ./build + "/${name}";
+      in
+      rec {
+        packages = builtins.listToAttrs (builtins.map
+          (tool:
+            let
+              name = tool.name;
+              desktopItem = pkgs.makeDesktopItem {
+                inherit name;
+                exec = name;
+                icon = name;
+                comment = tool.comment;
+                desktopName = tool.desktop_name;
+              };
+              pkg = pkgs.stdenv.mkDerivation {
+                inherit name;
+                src = ./build + "/${name}.tar.zst";
 
-              nativeBuildInputs = with pkgs; [ makeWrapper ];
+                nativeBuildInputs = with pkgs; [ makeWrapper zstd ];
 
-              buildPhase = ":";
-              installPhase = ''
-                install -m 444 -D images/${tool.icon} $out/share/icons/hicolor/128x128/apps/${name}.png
-                mkdir -p $out/opt/${name}
-                mv * $out/opt/${name}
-                makeWrapper ${pkgs.nwjs}/bin/nw $out/bin/${name} --add-flags $out/opt/${name}
-                cp -r ${desktopItem}/share/applications $out/share/
-              '';
-            };
-          in lib.nameValuePair name pkg) tools);
+                buildPhase = ":";
+                installPhase = ''
+                  install -m 444 -D images/${tool.icon} $out/share/icons/hicolor/128x128/apps/${name}.png
+                  mkdir -p $out/opt/${name}
+                  mv * $out/opt/${name}
+                  makeWrapper ${pkgs.nwjs}/bin/nw $out/bin/${name} --add-flags $out/opt/${name}
+                  cp -r ${desktopItem}/share/applications $out/share/
+                '';
+              };
+            in
+            lib.nameValuePair name pkg)
+          tools);
 
         apps = lib.genAttrs (builtins.map (t: t.name) tools)
           (name: flake-utils.lib.mkApp { drv = packages."${name}"; });
@@ -49,6 +53,7 @@
             nodejs-10_x
             (yarn.override { nodejs = nodejs-10_x; })
             nodePackages.gulp
+            zstd
           ];
           shellHook = ''
             SCRIPT_DIR="$(pwd)"
@@ -80,7 +85,8 @@
               yarn install 
               yarn gulp dist 
               mkdir -p "$SCRIPT_DIR/build"
-              mv dist "$SCRIPT_DIR/build/$name"
+              mv dist $name
+              tar -cv $name | zstd --ultra -22 -T0 -o "$SCRIPT_DIR/build/$name.tar.zst"
             done< <(tomlq -r '.tools[].name' tools.toml)
             exit
           '';
