@@ -9,6 +9,7 @@
         pkgs = nixpkgs.legacyPackages.${system};
         lib = nixpkgs.lib;
         tools = (lib.importTOML ./tools.toml).tools;
+        nodejs = pkgs.nodejs-10_x;  
       in
       rec {
         packages = builtins.listToAttrs (builtins.map
@@ -26,7 +27,7 @@
                 inherit name;
                 src = ./build + "/${name}.tar.zst";
 
-                nativeBuildInputs = with pkgs; [ makeWrapper zstd ];
+                nativeBuildInputs = with pkgs; [ makeWrapper zstd wrapGAppsHook ];
 
                 buildPhase = ":";
                 installPhase = ''
@@ -50,8 +51,8 @@
           buildInputs = with pkgs; [
             git
             yq
-            nodejs-10_x
-            (yarn.override { nodejs = nodejs-10_x; })
+            nodejs
+            (yarn.override { inherit nodejs; })
             nodePackages.gulp
             zstd
           ];

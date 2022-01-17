@@ -3,7 +3,7 @@
 [[tools]]
 name = "betaflight-configurator"
 url = "https://github.com/betaflight/betaflight-configurator"
-tag = "10.7.1"
+tag = "10.7.2"
 desktop_name = "Betaflight Configurator"
 comment = "Configure Betaflight flight controllers"
 icon = "bf_icon_128.png"
